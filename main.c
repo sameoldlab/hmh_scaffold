@@ -1,43 +1,59 @@
-#define SOKOL_IMPL 
-#define SOKOL_GLCORE
-// #define SOKOL_GLES3
+#define SDL_MAIN_USE_CALLBACKS 1 /* use the callbacks instead of main() */
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_main.h>
 
-#include "vendor/sokol/sokol_app.h"
-#include "vendor/sokol/sokol_log.h"
-#include "vendor/sokol/sokol_gfx.h"
-#include "vendor/sokol/sokol_glue.h"
+/* We will use this renderer to draw into this window every frame. */
+static SDL_Window *window = NULL;
+static SDL_Renderer *renderer = NULL;
 
-// static struct {
-//     sg_pipeline pip;
-//     sg_bindings bind;
-//     sg_pass_action pass_action;
-// } state;
+/* This function runs once at startup. */
+SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
+  SDL_SetAppMetadata("Example Renderer Clear", "1.0",
+                     "com.example.renderer-clear");
 
-static void init(void) {}
+  if (!SDL_Init(SDL_INIT_VIDEO)) {
+    SDL_Log("Couldn't initialize SDL: %s", SDL_GetError());
+    return SDL_APP_FAILURE;
+  }
 
-void frame(void) {
-    // sg_begin_pass(&(sg_pass){ .action = state.pass_action, .swapchain = sglue_swapchain() });
-    // sg_apply_pipeline(state.pip);
-    // sg_apply_bindings(&state.bind);
-    // sg_draw(0, 3, 1);
-    // sg_end_pass();
-    // sg_commit();
+  if (!SDL_CreateWindowAndRenderer("examples/renderer/clear", 640, 480, 0,
+                                   &window, &renderer)) {
+    SDL_Log("Couldn't create window/renderer: %s", SDL_GetError());
+    return SDL_APP_FAILURE;
+  }
+
+  return SDL_APP_CONTINUE; /* carry on with the program! */
 }
 
-void cleanup(void) {
-    sg_shutdown();
+/* This function runs when a new event (mouse input, keypresses, etc) occurs. */
+SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
+  if (event->type == SDL_EVENT_QUIT) {
+    return SDL_APP_SUCCESS; /* end the program, reporting success to the OS. */
+  }
+  return SDL_APP_CONTINUE; /* carry on with the program! */
 }
 
-sapp_desc sokol_main(int argc, char* argv[]) {
-    (void)argc; (void)argv;
-    return (sapp_desc){
-        .init_cb = init,
-        .frame_cb = frame,
-        .cleanup_cb = cleanup,
-        .width = 640,
-        .height = 480,
-        .window_title = "Pengu",
-        .icon.sokol_default = true,
-        .logger.func = slog_func,
-    };
+/* This function runs once per frame, and is the heart of the program. */
+SDL_AppResult SDL_AppIterate(void *appstate) {
+  const double now = ((double)SDL_GetTicks()) /
+                     1000.0; /* convert from milliseconds to seconds. */
+  /* choose the color for the frame we will draw. The sine wave trick makes it
+   * fade between colors smoothly. */
+  const float red = (float)(0.5 + 0.5 * SDL_sin(now));
+  const float green = (float)(0.5 + 0.5 * SDL_sin(now + SDL_PI_D * 2 / 3));
+  const float blue = (float)(0.5 + 0.5 * SDL_sin(now + SDL_PI_D * 4 / 3));
+  SDL_SetRenderDrawColorFloat(
+      renderer, red, green, blue,
+      SDL_ALPHA_OPAQUE_FLOAT); /* new color, full alpha. */
+
+  /* clear the window to the draw color. */
+  SDL_RenderClear(renderer);
+
+  // put the newly-cleared rendering on the screen.
+  SDL_RenderPresent(renderer);
+
+  // carry on with the program! 
+  return SDL_APP_CONTINUE; 
 }
+
+void SDL_AppQuit(void *appstate, SDL_AppResult result) { }
