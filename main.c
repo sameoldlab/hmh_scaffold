@@ -1,46 +1,74 @@
-#include <SDL3/SDL_init.h>
-#include <SDL3/SDL_messagebox.h>
-#include <stdio.h>
-#define SDL_MAIN_USE_CALLBACKS 1
+// file:///home/ibro/Documents/Library/sdlwiki/SDL3/
 #include <SDL3/SDL.h>
-#include <SDL3/SDL_main.h>
 
 static SDL_Window *window = NULL;
 static SDL_Renderer *renderer = NULL;
 
-SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
-  SDL_SetAppMetadata("", "1.0", "supply.same.handmade");
-
-  if (!SDL_Init(SDL_INIT_VIDEO)) {
-    SDL_Log("Couldn't initialize SDL: %s", SDL_GetError());
-    return SDL_APP_FAILURE;
-  }
-
-  SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Handmade Hero",
-                           "This is handmade hero", 0);
-
-  return SDL_APP_SUCCESS;
-}
-
-SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
-  if (event->type == SDL_EVENT_QUIT) {
-    return SDL_APP_SUCCESS;
-  }
-  // printf("%d", event->);
-  return SDL_APP_CONTINUE;
-}
-
-SDL_AppResult SDL_AppIterate(void *appstate) {
+void draw() {
   const double now = ((double)SDL_GetTicks()) / 1000.0;
-  const float red = (float)(0.5 + 0.5 * SDL_sin(now));
-  const float green = (float)(0.5 + 0.5 * SDL_sin(now + SDL_PI_D * 2 / 3));
-  const float blue = (float)(0.5 + 0.5 * SDL_sin(now + SDL_PI_D * 4 / 3));
-  SDL_SetRenderDrawColorFloat(renderer, red, green, blue,
-                              SDL_ALPHA_OPAQUE_FLOAT);
-
+  const double col = (double)(SDL_GetTicks() % 2);
+  SDL_SetRenderDrawColorFloat(renderer, col, col, col, SDL_ALPHA_OPAQUE_FLOAT);
   SDL_RenderClear(renderer);
   SDL_RenderPresent(renderer);
-  return SDL_APP_CONTINUE;
 }
 
-void SDL_AppQuit(void *appstate, SDL_AppResult result) {}
+// Event docs: SDL_EventType.html
+bool handle_event(SDL_Event *event) {
+  switch (event->type) {
+  case SDL_EVENT_WINDOW_RESIZED: {
+    SDL_Log("resize (%d, %d)", event->window.data1, event->window.data2);
+  } break;
+  case SDL_EVENT_KEY_DOWN: {
+    SDL_Log("key down: %d", event->window.data2);
+  } break;
+  case SDL_EVENT_KEY_UP: {
+    SDL_Log("key up: %d", event->window.data2);
+  } break;
+  case SDL_EVENT_WINDOW_EXPOSED: {
+    draw();
+  } break;
+  default: {
+    SDL_Log("unhandled event: %d", event->type);
+  } break;
+  }
+  return true;
+}
+
+bool init_ui() {
+  SDL_SetAppMetadata("Hero", "1.0", "supply.same.handmade");
+  if (!SDL_Init(SDL_INIT_VIDEO)) {
+    SDL_Log("Couldn't initialize SDL: %s", SDL_GetError());
+    return false;
+  }
+  if (!SDL_CreateWindowAndRenderer("Hero", 640, 480, SDL_WINDOW_RESIZABLE,
+                                   &window, &renderer)) {
+    SDL_Log("Couldn't create window/renderer: %s", SDL_GetError());
+    return false;
+  }
+  return true;
+}
+
+void quit() {
+  SDL_DestroyWindow(window);
+  SDL_Quit();
+}
+
+int main() {
+  if (!init_ui()) {
+    return -1;
+  }
+
+  bool done = false;
+  while (!done) {
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+      if (event.type == SDL_EVENT_QUIT) {
+        done = true;
+      }
+      handle_event(&event);
+    }
+  }
+
+  quit();
+  return 0;
+}
