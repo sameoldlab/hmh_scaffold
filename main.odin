@@ -58,14 +58,35 @@ handle_event :: proc(app: ^SDL3_Offscreen_Buffer, event: sdl.Event) -> bool {
 	case .WINDOW_PIXEL_SIZE_CHANGED:
 		sdl.GetWindowSize(app.window, &app.w, &app.h)
 	// resize_texture(app, event.window.data1, event.window.data2)
-	// sdl.
-	case .KEY_DOWN:
-		sdl.Log("key down: %d", event.window.data2)
-	case .KEY_UP:
-		sdl.Log("key up: %d", event.window.data2)
+	case .KEY_DOWN, .KEY_UP:
+		wasDown := event.key.repeat || event.type == .KEY_UP
+		isDown := event.type == .KEY_DOWN
+		if wasDown != isDown {
+			if (isDown) do fmt.print("IsDown")
+			if (wasDown) do fmt.print("wasDown")
+			fmt.print('\n')
+			// if event.key.repeat
+			#partial switch event.key.scancode {
+			case .W:
+			case .A:
+			case .S:
+			case .D:
+			case .Q:
+			case .E:
+			case .UP:
+			case .LEFT:
+			case .DOWN:
+			case .RIGHT:
+			}
+		}
 	case .WINDOW_EXPOSED:
 		sdl.Log("draw")
 		draw(app)
+	case .JOYSTICK_ADDED:
+		sdl.Log("JOYSTICK_ADDED")
+	case .GAMEPAD_ADDED:
+		sdl.Log("GAMEPAD_ADDED")
+		init_controller()
 	case:
 		sdl.Log("unhandled event: %d", event.type)
 	}
@@ -96,7 +117,7 @@ init_ui :: proc() -> (app: SDL3_Offscreen_Buffer, err: Maybe(string)) {
 	}
 
 
-	app.window = sdl.CreateWindow("Hero", 640, 480, sdl.WINDOW_RESIZABLE)
+	app.window = sdl.CreateWindow("dbg:Hero", 640, 480, sdl.WINDOW_RESIZABLE)
 	if app.window == nil {return app, string(sdl.GetError())}
 
 	app.renderer = sdl.CreateRenderer(app.window, nil)
@@ -104,7 +125,18 @@ init_ui :: proc() -> (app: SDL3_Offscreen_Buffer, err: Maybe(string)) {
 
 	return app, nil
 }
-
+init_controller :: proc() -> bool {
+	if !sdl.InitSubSystem(sdl.INIT_GAMEPAD) {
+		return false //, sdl.GetError()
+	}
+	count: c.int
+	gamepadIds := sdl.GetGamepads(&count)
+	gamepads := make([]^sdl.Gamepad, count)
+	for i in 0 ..< count {
+		gamepads[i] = sdl.OpenGamepad(gamepadIds[i])
+	}
+	return true
+}
 quit :: proc(app: SDL3_Offscreen_Buffer) {
 	if app.fb != nil do delete(app.fb)
 	sdl.DestroyTexture(app.texture)
@@ -134,6 +166,7 @@ main :: proc() {
 
 	app, err := init_ui()
 	if err != nil do fmt.panicf("unable to initialize ui %s", err)
+	init_controller()
 	defer quit(app)
 	resize_texture(&app, BUF_WIDTH, BUF_HEIGHT)
 
