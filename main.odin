@@ -126,6 +126,21 @@ init_ui :: proc() -> (app: SDL3_Offscreen_Buffer, err: Maybe(string)) {
 
 	return app, nil
 }
+
+init_sound :: proc() -> (stream: ^sdl.AudioStream, err: Maybe(string)) {
+	if !sdl.InitSubSystem(sdl.INIT_AUDIO) {
+		return stream, string(sdl.GetError())
+	}
+	spec := sdl.AudioSpec{sdl.AudioFormat.S16, 2, 44100}
+	stream = sdl.OpenAudioDeviceStream(sdl.AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nil, nil)
+	if stream == nil {
+		return stream, string(sdl.GetError())
+	}
+
+	sdl.ResumeAudioDevice(sdl.GetAudioStreamDevice(stream))
+
+	return stream, nil
+}
 init_controller :: proc() -> bool {
 	if !sdl.InitSubSystem(sdl.INIT_GAMEPAD) {
 		return false //, sdl.GetError()
@@ -168,10 +183,13 @@ main :: proc() {
 	}
 	app, err := init_ui()
 	if err != nil do fmt.panicf("unable to initialize ui %s", err)
-	init_controller()
 	defer quit(app)
-	resize_texture(&app, BUF_WIDTH, BUF_HEIGHT)
 
+	stream, stream_err := init_sound()
+	if stream_err != nil do sdl.Log("unable to initialize audio", stream_err)
+
+	init_controller()
+	resize_texture(&app, BUF_WIDTH, BUF_HEIGHT)
 	done: for {
 		when ODIN_DEBUG {
 			perfCount := sdl.GetPerformanceFrequency()
