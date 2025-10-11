@@ -1,9 +1,12 @@
-package main
+package platform
+
+import "../app"
 import "base:intrinsics"
 import "core:c"
 import "core:fmt"
 import "core:math"
 import "core:mem"
+import "core:strings"
 import sdl "vendor:sdl3"
 
 // Constants
@@ -49,41 +52,25 @@ play :: proc(sound: ^SDL3_Sound_Output) {
 	}
 }
 
-render_gradient :: proc(fb: []u8, w, h, x_off, y_off: int) {
-	i := 0
-	for y in 0 ..< h {
-		for x in 0 ..< w {
-			fb[i] = u8(x + x_off)
-			i += 1
-			fb[i] = u8(y + y_off)
-			i += 1
-			fb[i] = 000
-			i += 1
-			fb[i] = 255
-			i += 1
-		}
-	}
-}
+draw :: proc(ctx: ^SDL3_Offscreen_Buffer) {
+	sdl.SetRenderDrawColor(ctx.renderer, 0, 0, 0, sdl.ALPHA_OPAQUE)
+	sdl.RenderClear(ctx.renderer)
 
-draw :: proc(app: ^SDL3_Offscreen_Buffer) {
-	sdl.SetRenderDrawColor(app.renderer, 0, 0, 0, sdl.ALPHA_OPAQUE)
-	sdl.RenderClear(app.renderer)
-
-	pitch: i32 = 4 * app.w
+	pitch: i32 = 4 * ctx.w
 	x_off := int(sdl.GetTicks())
 	y_off := int(sdl.GetTicks())
 
 	// sdl.Log("resize (%d, %d)", app.w, app.h)
-	render_gradient(app.fb, int(app.w), int(app.h), x_off, 0)
-	sdl.UpdateTexture(app.texture, nil, raw_data(app.fb), pitch)
-	sdl.RenderTexture(app.renderer, app.texture, nil, nil)
+	app.draw(ctx.fb, int(ctx.w), int(ctx.h), x_off, 0)
+	sdl.UpdateTexture(ctx.texture, nil, raw_data(ctx.fb), pitch)
+	sdl.RenderTexture(ctx.renderer, ctx.texture, nil, nil)
 
-	sdl.RenderPresent(app.renderer)
+	sdl.RenderPresent(ctx.renderer)
 }
 
 // Event docs: SDL_EventType.html
 handle_event :: proc(
-	app: ^SDL3_Offscreen_Buffer,
+	ctx: ^SDL3_Offscreen_Buffer,
 	sound: ^SDL3_Sound_Output,
 	event: sdl.Event,
 ) -> bool {
@@ -93,8 +80,8 @@ handle_event :: proc(
 	case .WINDOW_RESIZED:
 		sdl.Log("resize (%d, %d)", event.window.data1, event.window.data2)
 	case .WINDOW_PIXEL_SIZE_CHANGED:
-		sdl.GetWindowSize(app.window, &app.w, &app.h)
-		resize_texture(app, event.window.data1, event.window.data2)
+		sdl.GetWindowSize(ctx.window, &ctx.w, &ctx.h)
+		resize_texture(ctx, event.window.data1, event.window.data2)
 	case .KEY_DOWN, .KEY_UP:
 		wasDown := event.key.repeat || event.type == .KEY_UP
 		isDown := event.type == .KEY_DOWN
@@ -115,7 +102,7 @@ handle_event :: proc(
 		}
 	case .WINDOW_EXPOSED:
 		sdl.Log("draw")
-		draw(app)
+		draw(ctx)
 	case .JOYSTICK_ADDED:
 		sdl.Log("JOYSTICK_ADDED")
 	case .GAMEPAD_ADDED:
@@ -127,38 +114,47 @@ handle_event :: proc(
 	return true
 }
 
-resize_texture :: proc(app: ^SDL3_Offscreen_Buffer, width, height: i32) -> (ok: bool) {
-	if app.texture != nil do sdl.DestroyTexture(app.texture)
-	if app.fb != nil do delete(app.fb)
+resize_texture :: proc(ctx: ^SDL3_Offscreen_Buffer, width, height: i32) -> (ok: bool) {
+	if ctx.texture != nil do sdl.DestroyTexture(ctx.texture)
+	if ctx.fb != nil do delete(ctx.fb)
 
-	app.texture = sdl.CreateTexture(
-		app.renderer,
+	ctx.texture = sdl.CreateTexture(
+		ctx.renderer,
 		sdl.PixelFormat.ARGB8888,
 		sdl.TextureAccess.STREAMING,
 		width,
 		height,
 	)
 
-	if app.texture == nil {return false}
-	app.fb = make([]u8, width * height * 4)
+	if ctx.texture == nil {return false}
+	ctx.fb = make([]u8, width * height * 4)
 	return true
 }
 
 
-init_ui :: proc() -> (app: SDL3_Offscreen_Buffer, err: Maybe(string)) {
-	_ignore := sdl.SetAppMetadata("Hero", "1.0", "supply.same.handmade")
+init_ui :: proc(
+	title: cstring,
+	app_id: cstring = "supply.same.handmade",
+	version: cstring = "1.0",
+	width: c.int = 640,
+	height: c.int = 480,
+) -> (
+	ctx: SDL3_Offscreen_Buffer,
+	err: Maybe(string),
+) {
+	_ignore := sdl.SetAppMetadata(title, version, app_id)
 	if (!sdl.Init(sdl.INIT_VIDEO)) {
-		return app, string(sdl.GetError())
+		return ctx, string(sdl.GetError())
 	}
 
 
-	app.window = sdl.CreateWindow("dbg:Hero", 640, 480, sdl.WINDOW_RESIZABLE)
-	if app.window == nil {return app, string(sdl.GetError())}
+	ctx.window = sdl.CreateWindow(title, width, height, sdl.WINDOW_RESIZABLE)
+	if ctx.window == nil {return ctx, string(sdl.GetError())}
 
-	app.renderer = sdl.CreateRenderer(app.window, nil)
-	if app.renderer == nil {return app, string(sdl.GetError())}
+	ctx.renderer = sdl.CreateRenderer(ctx.window, nil)
+	if ctx.renderer == nil {return ctx, string(sdl.GetError())}
 
-	return app, nil
+	return ctx, nil
 }
 
 init_sound :: proc(sampleRate: c.int) -> (stream: ^sdl.AudioStream, err: Maybe(string)) {
@@ -188,14 +184,14 @@ init_controller :: proc() -> bool {
 	}
 	return true
 }
-quit :: proc(app: SDL3_Offscreen_Buffer) {
-	if app.fb != nil do delete(app.fb)
-	sdl.DestroyTexture(app.texture)
-	sdl.DestroyWindow(app.window)
+quit :: proc(ctx: SDL3_Offscreen_Buffer) {
+	if ctx.fb != nil do delete(ctx.fb)
+	sdl.DestroyTexture(ctx.texture)
+	sdl.DestroyWindow(ctx.window)
 	sdl.Quit()
 }
 
-main :: proc() {
+start :: proc(title: string) {
 	when ODIN_DEBUG {
 		track: mem.Tracking_Allocator
 		mem.tracking_allocator_init(&track, context.allocator)
@@ -216,7 +212,7 @@ main :: proc() {
 			mem.tracking_allocator_destroy(&track)
 		}
 	}
-	app, err := init_ui()
+	app, err := init_ui(strings.clone_to_cstring(title))
 	if err != nil do fmt.panicf("unable to initialize ui %s", err)
 	defer quit(app)
 
