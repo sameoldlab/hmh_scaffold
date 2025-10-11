@@ -9,8 +9,6 @@ import sdl "vendor:sdl3"
 // Constants
 BUF_WIDTH :: 1920
 BUF_HEIGHT :: 1080
-SAMPLE_RATE :: 44100
-TONE_VOLUME :: 1
 
 SDL3_Offscreen_Buffer :: struct {
 	window:   ^sdl.Window,
@@ -19,27 +17,33 @@ SDL3_Offscreen_Buffer :: struct {
 	fb:       []u8,
 	w, h:     c.int,
 }
-current_sample: i32 = 0
+SDL3_Sound_Output :: struct {
+	wavePeriod, toneHz, tSine:                  f32,
+	sampleRate, current_sample, bytesPerSample: i32,
+	toneVolume, latency:                        i16,
+	stream:                                     ^sdl.AudioStream,
+}
 
-play :: proc(stream: ^sdl.AudioStream, freq := 440) {
-	BytesPerSample: i32 : size_of(f32) * 2
-	WavePeriod: f32 : SAMPLE_RATE / 256.0
-	bytesToWrite := SAMPLE_RATE * BytesPerSample - sdl.GetAudioStreamQueued(stream)
+play :: proc(sound: ^SDL3_Sound_Output) {
+	sound.bytesPerSample = size_of(f32) * 2
+	sound.wavePeriod = f32(sound.sampleRate) / sound.toneHz
+	bytesToWrite :=
+		(i32(sound.latency) * sound.bytesPerSample) - sdl.GetAudioStreamQueued(sound.stream)
 	if bytesToWrite <= 0 do return
 
 	buf := make([]f32, bytesToWrite, context.temp_allocator)
 	for i in 0 ..< (len(buf) / 2) {
-		t: f32 = 2.0 * math.PI * f32(current_sample) / WavePeriod
-
-		val := math.sin_f32(t) * TONE_VOLUME
-
+		t: f32 = 2.0 * math.PI * f32(sound.current_sample) / sound.wavePeriod
+		sound.tSine += 2.0 * math.PI / sound.wavePeriod
+		if sound.tSine >= math.PI * 2 {sound.tSine = 0}
+		val := math.sin_f32(sound.tSine) * f32(sound.toneVolume)
 		buf[i * 2] = val
 		buf[i * 2 + 1] = val
-		current_sample += 1
+		sound.current_sample += 1
 	}
 
-	current_sample %= SAMPLE_RATE
-	res := sdl.PutAudioStreamData(stream, raw_data(buf), bytesToWrite * 4)
+	sound.current_sample %= sound.sampleRate
+	res := sdl.PutAudioStreamData(sound.stream, &buf[0], bytesToWrite * 4)
 	if !res {
 		sdl.Log("failed to put audio %s", sdl.GetError())
 	}
@@ -78,7 +82,11 @@ draw :: proc(app: ^SDL3_Offscreen_Buffer) {
 }
 
 // Event docs: SDL_EventType.html
-handle_event :: proc(app: ^SDL3_Offscreen_Buffer, event: sdl.Event) -> bool {
+handle_event :: proc(
+	app: ^SDL3_Offscreen_Buffer,
+	sound: ^SDL3_Sound_Output,
+	event: sdl.Event,
+) -> bool {
 	pitch: u32
 
 	#partial switch event.type {
@@ -90,23 +98,20 @@ handle_event :: proc(app: ^SDL3_Offscreen_Buffer, event: sdl.Event) -> bool {
 	case .KEY_DOWN, .KEY_UP:
 		wasDown := event.key.repeat || event.type == .KEY_UP
 		isDown := event.type == .KEY_DOWN
-		if wasDown != isDown {
-			if (isDown) do fmt.print("IsDown")
-			if (wasDown) do fmt.print("wasDown")
-			fmt.print('\n')
-			// if event.key.repeat
-			#partial switch event.key.scancode {
-			case .W:
-			case .A:
-			case .S:
-			case .D:
-			case .Q:
-			case .E:
-			case .UP:
-			case .LEFT:
-			case .DOWN:
-			case .RIGHT:
-			}
+		// if wasDown != isDown {
+		// if (isDown) do fmt.print("IsDown")
+		// if (wasDown) do fmt.print("wasDown")
+		// if event.key.repeat
+		#partial switch event.key.scancode {
+		case .W, .UP:
+			sound.toneHz += 4
+		case .A, .LEFT:
+		case .S, .DOWN:
+			sound.toneHz -= 4
+		case .D, .RIGHT:
+		case .Q:
+		case .E:
+		// }
 		}
 	case .WINDOW_EXPOSED:
 		sdl.Log("draw")
@@ -156,11 +161,11 @@ init_ui :: proc() -> (app: SDL3_Offscreen_Buffer, err: Maybe(string)) {
 	return app, nil
 }
 
-init_sound :: proc() -> (stream: ^sdl.AudioStream, err: Maybe(string)) {
+init_sound :: proc(sampleRate: c.int) -> (stream: ^sdl.AudioStream, err: Maybe(string)) {
 	if !sdl.InitSubSystem(sdl.INIT_AUDIO) {
 		return stream, string(sdl.GetError())
 	}
-	spec := sdl.AudioSpec{sdl.AudioFormat.F32, 2, SAMPLE_RATE}
+	spec := sdl.AudioSpec{sdl.AudioFormat.F32, 2, sampleRate}
 	stream = sdl.OpenAudioDeviceStream(sdl.AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nil, nil)
 	if stream == nil {
 		return stream, string(sdl.GetError())
@@ -215,8 +220,16 @@ main :: proc() {
 	if err != nil do fmt.panicf("unable to initialize ui %s", err)
 	defer quit(app)
 
-	stream, stream_err := init_sound()
+	SampleRate :: 44100
+	stream, stream_err := init_sound(SampleRate)
 	if stream_err != nil do sdl.Log("unable to initialize audio", stream_err)
+	sound := SDL3_Sound_Output {
+		sampleRate = SampleRate,
+		toneVolume = 1,
+		stream     = stream,
+		toneHz     = 256,
+		latency    = SampleRate / 12,
+	}
 
 	init_controller()
 	resize_texture(&app, BUF_WIDTH, BUF_HEIGHT)
@@ -226,14 +239,14 @@ main :: proc() {
 	}
 	done: for {
 		event: sdl.Event
-		play(stream)
+		play(&sound)
 		for sdl.PollEvent(&event) {
 			if event.type == sdl.EventType.QUIT ||
 			   (event.type == sdl.EventType.KEY_DOWN &&
 					   event.key.scancode == sdl.Scancode.ESCAPE) {
 				break done
 			}
-			handle_event(&app, event)
+			handle_event(&app, &sound, event)
 		}
 		draw(&app)
 		when ODIN_DEBUG {
