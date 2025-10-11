@@ -2,12 +2,15 @@ package main
 import "base:intrinsics"
 import "core:c"
 import "core:fmt"
+import "core:math"
 import "core:mem"
 import sdl "vendor:sdl3"
 
 // Constants
 BUF_WIDTH :: 1920
 BUF_HEIGHT :: 1080
+SAMPLE_RATE :: 44100
+TONE_VOLUME :: 6000
 
 SDL3_Offscreen_Buffer :: struct {
 	window:   ^sdl.Window,
@@ -15,6 +18,30 @@ SDL3_Offscreen_Buffer :: struct {
 	texture:  ^sdl.Texture,
 	fb:       []u8,
 	w, h:     c.int,
+}
+current_sample: i32 = 0
+
+play :: proc(stream: ^sdl.AudioStream) {
+	bytesPerSample: i32 = size_of(i16) * 2
+	bytesToWrite := SAMPLE_RATE * bytesPerSample - sdl.GetAudioStreamQueued(stream)
+	if bytesToWrite <= 0 do return
+
+	buf := make([]i16, bytesToWrite, context.temp_allocator)
+
+	fmt.println(sdl.GetAudioStreamQueued(stream))
+	for i in 0 ..< (len(buf) / 2) {
+		FREQ :: 440
+		phase := f16(current_sample * FREQ / (SAMPLE_RATE / 2))
+
+		val := math.sin_f16(phase * 2 * math.PI) * TONE_VOLUME
+
+		buf[i * 2] = i16(val)
+		buf[i * 2 + 1] = i16(val)
+		current_sample += 1
+	}
+
+	current_sample %= SAMPLE_RATE * 2
+	sdl.PutAudioStreamData(stream, &buf[0], i32(len(buf) * size_of(i16)))
 }
 
 render_gradient :: proc(fb: []u8, w, h, x_off, y_off: int) {
@@ -89,7 +116,7 @@ handle_event :: proc(app: ^SDL3_Offscreen_Buffer, event: sdl.Event) -> bool {
 		sdl.Log("GAMEPAD_ADDED")
 		init_controller()
 	case:
-		sdl.Log("unhandled event: %d", event.type)
+	// sdl.Log("unhandled event: %d", event.type)
 	}
 	return true
 }
@@ -111,6 +138,7 @@ resize_texture :: proc(app: ^SDL3_Offscreen_Buffer, width, height: i32) -> (ok: 
 	return true
 }
 
+
 init_ui :: proc() -> (app: SDL3_Offscreen_Buffer, err: Maybe(string)) {
 	_ignore := sdl.SetAppMetadata("Hero", "1.0", "supply.same.handmade")
 	if (!sdl.Init(sdl.INIT_VIDEO)) {
@@ -131,7 +159,7 @@ init_sound :: proc() -> (stream: ^sdl.AudioStream, err: Maybe(string)) {
 	if !sdl.InitSubSystem(sdl.INIT_AUDIO) {
 		return stream, string(sdl.GetError())
 	}
-	spec := sdl.AudioSpec{sdl.AudioFormat.S16, 2, 44100}
+	spec := sdl.AudioSpec{sdl.AudioFormat.S16, 2, SAMPLE_RATE}
 	stream = sdl.OpenAudioDeviceStream(sdl.AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nil, nil)
 	if stream == nil {
 		return stream, string(sdl.GetError())
@@ -141,6 +169,7 @@ init_sound :: proc() -> (stream: ^sdl.AudioStream, err: Maybe(string)) {
 
 	return stream, nil
 }
+
 init_controller :: proc() -> bool {
 	if !sdl.InitSubSystem(sdl.INIT_GAMEPAD) {
 		return false //, sdl.GetError()
@@ -190,12 +219,13 @@ main :: proc() {
 
 	init_controller()
 	resize_texture(&app, BUF_WIDTH, BUF_HEIGHT)
+	when ODIN_DEBUG {
+		perfCountFreq := sdl.GetPerformanceFrequency()
+		lastPerfCount := sdl.GetPerformanceCounter()
+	}
 	done: for {
-		when ODIN_DEBUG {
-			perfCount := sdl.GetPerformanceFrequency()
-			lastCount := sdl.GetPerformanceCounter()
-		}
 		event: sdl.Event
+		play(stream)
 		for sdl.PollEvent(&event) {
 			if event.type == sdl.EventType.QUIT ||
 			   (event.type == sdl.EventType.KEY_DOWN &&
@@ -206,15 +236,17 @@ main :: proc() {
 		}
 		draw(&app)
 		when ODIN_DEBUG {
-			endCounter := sdl.GetPerformanceCounter()
-			counterElapsed := endCounter - lastCount
-			msPerFrame := (((1000 * counterElapsed) / perfCount))
-			fps := perfCount / counterElapsed
+			endPerfCount := sdl.GetPerformanceCounter()
+			counterElapsed := endPerfCount - lastPerfCount
+			lastPerfCount = endPerfCount
+
+			msPerFrame := (((1000 * counterElapsed) / perfCountFreq))
+			fps := perfCountFreq / counterElapsed
 
 			lastCycleCounter := intrinsics.read_cycle_counter()
-			elapsed := i64(endCounter) - lastCycleCounter
+			elapsed := i64(endPerfCount) - lastCycleCounter
 			mcpf := elapsed / (2000)
-			fmt.printfln("%.02f ms/f, %.02f/s, %.02mc/f,", msPerFrame, fps, mcpf)
+			fmt.printfln("%d ms/f | %dfps | %d mc/f,", msPerFrame, fps, mcpf)
 		}
 	}
 }
