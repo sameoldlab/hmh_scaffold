@@ -1,6 +1,5 @@
-package platform
+package main
 
-import "../app"
 import "base:intrinsics"
 import "core:c"
 import "core:fmt"
@@ -13,55 +12,32 @@ import sdl "vendor:sdl3"
 BUF_WIDTH :: 1920
 BUF_HEIGHT :: 1080
 
-SDL3_Offscreen_Buffer :: struct {
+Offscreen_Buffer :: struct {
 	window:   ^sdl.Window,
 	renderer: ^sdl.Renderer,
 	texture:  ^sdl.Texture,
 	fb:       []u8,
 	w, h:     c.int,
 }
-SDL3_Sound_Output :: struct {
-	wavePeriod, toneHz, tSine:                  f32,
-	sampleRate, current_sample, bytesPerSample: i32,
-	toneVolume, latency:                        i16,
-	stream:                                     ^sdl.AudioStream,
+Sound_Output :: struct {
+	sampleRate: i32,
+	latency:    i16,
+	stream:     ^sdl.AudioStream,
 }
 
-play :: proc(sound: ^SDL3_Sound_Output) {
-	sound.bytesPerSample = size_of(f32) * 2
-	sound.wavePeriod = f32(sound.sampleRate) / sound.toneHz
-	bytesToWrite :=
-		(i32(sound.latency) * sound.bytesPerSample) - sdl.GetAudioStreamQueued(sound.stream)
-	if bytesToWrite <= 0 do return
-
-	buf := make([]f32, bytesToWrite, context.temp_allocator)
-	for i in 0 ..< (len(buf) / 2) {
-		t: f32 = 2.0 * math.PI * f32(sound.current_sample) / sound.wavePeriod
-		sound.tSine += 2.0 * math.PI / sound.wavePeriod
-		if sound.tSine >= math.PI * 2 {sound.tSine = 0}
-		val := math.sin_f32(sound.tSine) * f32(sound.toneVolume)
-		buf[i * 2] = val
-		buf[i * 2 + 1] = val
-		sound.current_sample += 1
-	}
-
-	sound.current_sample %= sound.sampleRate
-	res := sdl.PutAudioStreamData(sound.stream, &buf[0], bytesToWrite * 4)
-	if !res {
-		sdl.Log("failed to put audio %s", sdl.GetError())
-	}
+GameSoundBuffer :: struct {
+	sampleRate:  i32,
+	sampleCount: i32,
+	samples:     []f32,
 }
 
-draw :: proc(ctx: ^SDL3_Offscreen_Buffer) {
+pl_draw :: proc(ctx: ^Offscreen_Buffer) {
 	sdl.SetRenderDrawColor(ctx.renderer, 0, 0, 0, sdl.ALPHA_OPAQUE)
 	sdl.RenderClear(ctx.renderer)
+	x_off := i32(sdl.GetTicks())
+	// drawGradient(ctx.fb, ctx.w, ctx.h, x_off, 0)
 
 	pitch: i32 = 4 * ctx.w
-	x_off := int(sdl.GetTicks())
-	y_off := int(sdl.GetTicks())
-
-	// sdl.Log("resize (%d, %d)", app.w, app.h)
-	app.draw(ctx.fb, int(ctx.w), int(ctx.h), x_off, 0)
 	sdl.UpdateTexture(ctx.texture, nil, raw_data(ctx.fb), pitch)
 	sdl.RenderTexture(ctx.renderer, ctx.texture, nil, nil)
 
@@ -69,11 +45,7 @@ draw :: proc(ctx: ^SDL3_Offscreen_Buffer) {
 }
 
 // Event docs: SDL_EventType.html
-handle_event :: proc(
-	ctx: ^SDL3_Offscreen_Buffer,
-	sound: ^SDL3_Sound_Output,
-	event: sdl.Event,
-) -> bool {
+pl_handle_event :: proc(ctx: ^Offscreen_Buffer, sound: ^Sound_Output, event: sdl.Event) -> bool {
 	pitch: u32
 
 	#partial switch event.type {
@@ -81,7 +53,7 @@ handle_event :: proc(
 		sdl.Log("resize (%d, %d)", event.window.data1, event.window.data2)
 	case .WINDOW_PIXEL_SIZE_CHANGED:
 		sdl.GetWindowSize(ctx.window, &ctx.w, &ctx.h)
-		resize_texture(ctx, event.window.data1, event.window.data2)
+		pl_resize_texture(ctx, event.window.data1, event.window.data2)
 	case .KEY_DOWN, .KEY_UP:
 		wasDown := event.key.repeat || event.type == .KEY_UP
 		isDown := event.type == .KEY_DOWN
@@ -91,10 +63,10 @@ handle_event :: proc(
 		// if event.key.repeat
 		#partial switch event.key.scancode {
 		case .W, .UP:
-			sound.toneHz += 4
+		// sound.toneHz += 4
 		case .A, .LEFT:
 		case .S, .DOWN:
-			sound.toneHz -= 4
+		// sound.toneHz -= 4
 		case .D, .RIGHT:
 		case .Q:
 		case .E:
@@ -102,19 +74,19 @@ handle_event :: proc(
 		}
 	case .WINDOW_EXPOSED:
 		sdl.Log("draw")
-		draw(ctx)
+		pl_draw(ctx)
 	case .JOYSTICK_ADDED:
 		sdl.Log("JOYSTICK_ADDED")
 	case .GAMEPAD_ADDED:
 		sdl.Log("GAMEPAD_ADDED")
-		init_controller()
+		pl_init_controller()
 	case:
 	// sdl.Log("unhandled event: %d", event.type)
 	}
 	return true
 }
 
-resize_texture :: proc(ctx: ^SDL3_Offscreen_Buffer, width, height: i32) -> (ok: bool) {
+pl_resize_texture :: proc(ctx: ^Offscreen_Buffer, width, height: i32) -> (ok: bool) {
 	if ctx.texture != nil do sdl.DestroyTexture(ctx.texture)
 	if ctx.fb != nil do delete(ctx.fb)
 
@@ -132,21 +104,20 @@ resize_texture :: proc(ctx: ^SDL3_Offscreen_Buffer, width, height: i32) -> (ok: 
 }
 
 
-init_ui :: proc(
+pl_init_ui :: proc(
 	title: cstring,
 	app_id: cstring = "supply.same.handmade",
 	version: cstring = "1.0",
 	width: c.int = 640,
 	height: c.int = 480,
 ) -> (
-	ctx: SDL3_Offscreen_Buffer,
+	ctx: Offscreen_Buffer,
 	err: Maybe(string),
 ) {
 	_ignore := sdl.SetAppMetadata(title, version, app_id)
 	if (!sdl.Init(sdl.INIT_VIDEO)) {
 		return ctx, string(sdl.GetError())
 	}
-
 
 	ctx.window = sdl.CreateWindow(title, width, height, sdl.WINDOW_RESIZABLE)
 	if ctx.window == nil {return ctx, string(sdl.GetError())}
@@ -157,7 +128,7 @@ init_ui :: proc(
 	return ctx, nil
 }
 
-init_sound :: proc(sampleRate: c.int) -> (stream: ^sdl.AudioStream, err: Maybe(string)) {
+pl_init_sound :: proc(sampleRate: c.int) -> (stream: ^sdl.AudioStream, err: Maybe(string)) {
 	if !sdl.InitSubSystem(sdl.INIT_AUDIO) {
 		return stream, string(sdl.GetError())
 	}
@@ -172,7 +143,7 @@ init_sound :: proc(sampleRate: c.int) -> (stream: ^sdl.AudioStream, err: Maybe(s
 	return stream, nil
 }
 
-init_controller :: proc() -> bool {
+pl_init_controller :: proc() -> bool {
 	if !sdl.InitSubSystem(sdl.INIT_GAMEPAD) {
 		return false //, sdl.GetError()
 	}
@@ -184,14 +155,14 @@ init_controller :: proc() -> bool {
 	}
 	return true
 }
-quit :: proc(ctx: SDL3_Offscreen_Buffer) {
+pl_quit :: proc(ctx: Offscreen_Buffer) {
 	if ctx.fb != nil do delete(ctx.fb)
 	sdl.DestroyTexture(ctx.texture)
 	sdl.DestroyWindow(ctx.window)
 	sdl.Quit()
 }
 
-start :: proc(title: string) {
+pl_start :: proc(title: string) {
 	when ODIN_DEBUG {
 		track: mem.Tracking_Allocator
 		mem.tracking_allocator_init(&track, context.allocator)
@@ -212,39 +183,57 @@ start :: proc(title: string) {
 			mem.tracking_allocator_destroy(&track)
 		}
 	}
-	app, err := init_ui(strings.clone_to_cstring(title))
+	app, err := pl_init_ui(strings.clone_to_cstring(title, context.temp_allocator))
 	if err != nil do fmt.panicf("unable to initialize ui %s", err)
-	defer quit(app)
+	defer pl_quit(app)
 
 	SampleRate :: 44100
-	stream, stream_err := init_sound(SampleRate)
+	stream, stream_err := pl_init_sound(SampleRate)
 	if stream_err != nil do sdl.Log("unable to initialize audio", stream_err)
-	sound := SDL3_Sound_Output {
+	sound := Sound_Output {
 		sampleRate = SampleRate,
-		toneVolume = 1,
 		stream     = stream,
-		toneHz     = 256,
 		latency    = SampleRate / 12,
 	}
 
-	init_controller()
-	resize_texture(&app, BUF_WIDTH, BUF_HEIGHT)
+	pl_init_controller()
+	pl_resize_texture(&app, BUF_WIDTH, BUF_HEIGHT)
 	when ODIN_DEBUG {
 		perfCountFreq := sdl.GetPerformanceFrequency()
 		lastPerfCount := sdl.GetPerformanceCounter()
 	}
 	done: for {
 		event: sdl.Event
-		play(&sound)
 		for sdl.PollEvent(&event) {
 			if event.type == sdl.EventType.QUIT ||
 			   (event.type == sdl.EventType.KEY_DOWN &&
 					   event.key.scancode == sdl.Scancode.ESCAPE) {
 				break done
 			}
-			handle_event(&app, &sound, event)
+			pl_handle_event(&app, &sound, event)
 		}
-		draw(&app)
+
+		{
+			bytesPerSample: i32 = size_of(f32) * 2
+			bytesToWrite :=
+				(i32(sound.latency) * bytesPerSample) - sdl.GetAudioStreamQueued(sound.stream)
+			if bytesToWrite > 0 {
+				samples := make([]f32, max(bytesToWrite, 2), context.temp_allocator)
+
+				sound_out := GameSoundBuffer {
+					sampleRate  = sound.sampleRate,
+					sampleCount = bytesToWrite / bytesPerSample,
+					samples     = samples,
+				}
+				gameOutputSound(&sound_out)
+				sdl.PutAudioStreamData(sound.stream, &samples[0], bytesToWrite * 4)
+			}
+			updateAndRender(&app)
+			pl_draw(&app)
+			// if !res {
+			// 	sdl.Log("failed to put audio %s", sdl.GetError())
+			// }
+		}
 		when ODIN_DEBUG {
 			endPerfCount := sdl.GetPerformanceCounter()
 			counterElapsed := endPerfCount - lastPerfCount
