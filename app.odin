@@ -48,3 +48,19 @@ gameOutputSound :: proc(sound: ^GameSoundBuffer) {
 	ctx.current_sample %= sound.sampleRate
 }
 
+key_input :: proc(key: Input) {
+	switch key {
+	case .UP:
+		ctx.y_offset += 1
+		ctx.toneHz += 4
+	case .RIGHT:
+		ctx.x_offset -= 1
+	case .DOWN:
+		ctx.y_offset -= 1
+		ctx.toneHz -= 4
+	case .LEFT:
+		ctx.x_offset += 1
+
+	}
+}
+

@@ -63,11 +63,13 @@ pl_handle_event :: proc(ctx: ^Offscreen_Buffer, sound: ^Sound_Output, event: sdl
 		// if event.key.repeat
 		#partial switch event.key.scancode {
 		case .W, .UP:
-		// sound.toneHz += 4
+			app.key_input(app.Input.UP)
 		case .A, .LEFT:
+			app.key_input(app.Input.LEFT)
 		case .S, .DOWN:
-		// sound.toneHz -= 4
+			app.key_input(app.Input.DOWN)
 		case .D, .RIGHT:
+			app.key_input(app.Input.RIGHT)
 		case .Q:
 		case .E:
 		// }
