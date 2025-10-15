@@ -126,6 +126,7 @@ pl_init_ui :: proc(
 
 	ctx.renderer = sdl.CreateRenderer(ctx.window, nil)
 	if ctx.renderer == nil {return ctx, string(sdl.GetError())}
+	sdl.SetRenderVSync(ctx.renderer, sdl.RENDERER_VSYNC_ADAPTIVE)
 
 	return ctx, nil
 }
@@ -163,6 +164,17 @@ pl_quit :: proc(ctx: Offscreen_Buffer) {
 	sdl.DestroyWindow(ctx.window)
 	sdl.Quit()
 }
+pl_get_mode :: proc(window: ^sdl.Window) -> ^sdl.DisplayMode {
+	mode := sdl.GetCurrentDisplayMode(sdl.GetDisplayForWindow(window))
+	return mode
+}
+pl_set_refresh_rate :: proc(mode: ^sdl.DisplayMode) -> f32 {
+	if mode.refresh_rate == 0 {
+		return 60
+	} else {
+		return math.min(mode.refresh_rate, 120)
+	}
+}
 
 pl_start :: proc(title: string) {
 	when ODIN_DEBUG {
@@ -188,6 +200,8 @@ pl_start :: proc(title: string) {
 	app, err := pl_init_ui(strings.clone_to_cstring(title, context.temp_allocator))
 	if err != nil do fmt.panicf("unable to initialize ui %s", err)
 	defer pl_quit(app)
+	mode := sdl.GetCurrentDisplayMode(sdl.GetDisplayForWindow(ctx.window))
+	targetFps: f32 = 1 / pl_set_refresh_rate(mode)
 
 	SampleRate :: 44100
 	stream, stream_err := pl_init_sound(SampleRate)
@@ -236,15 +250,27 @@ pl_start :: proc(title: string) {
 			// 	sdl.Log("failed to put audio %s", sdl.GetError())
 			// }
 		}
+		endPerfCount := sdl.GetPerformanceCounter()
+		counterElapsed := endPerfCount - lastPerfCount
+		lastPerfCount = endPerfCount
+
+		msPerFrame := (((1000 * counterElapsed) / perfCountFreq))
+		currentFps := perfCountFreq / counterElapsed
+
+		for (f32(sdl.GetPerformanceCounter() - lastPerfCount) / f32(perfCountFreq) < targetFps) {
+			// using this number drops framerate below modern target of 120fps
+			// but difficult to track real data while logging
+			fmt.println(
+				(
+					targetFps -
+					f32(sdl.GetPerformanceCounter() - lastPerfCount) / f32(perfCountFreq) 
+				),
+			)
+			sdl.DelayNS(50)
+		}
+		lastCycleCounter := intrinsics.read_cycle_counter()
 		when ODIN_DEBUG {
-			endPerfCount := sdl.GetPerformanceCounter()
-			counterElapsed := endPerfCount - lastPerfCount
-			lastPerfCount = endPerfCount
-
-			msPerFrame := (((1000 * counterElapsed) / perfCountFreq))
 			fps := perfCountFreq / counterElapsed
-
-			lastCycleCounter := intrinsics.read_cycle_counter()
 			elapsed := i64(endPerfCount) - lastCycleCounter
 			mcpf := elapsed / (2000)
 			fmt.printfln("%d ms/f | %dfps | %d mc/f,", msPerFrame, fps, mcpf)
