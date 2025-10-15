@@ -8,11 +8,7 @@ import "core:mem"
 import "core:strings"
 import sdl "vendor:sdl3"
 
-// Constants
-BUF_WIDTH :: 1920
-BUF_HEIGHT :: 1080
-
-Offscreen_Buffer :: struct {
+SDL_Context :: struct {
 	window:   ^sdl.Window,
 	renderer: ^sdl.Renderer,
 	texture:  ^sdl.Texture,
@@ -25,27 +21,19 @@ Sound_Output :: struct {
 	stream:     ^sdl.AudioStream,
 }
 
-GameSoundBuffer :: struct {
-	sampleRate:  i32,
-	sampleCount: i32,
-	samples:     []f32,
-}
-
-pl_draw :: proc(ctx: ^Offscreen_Buffer) {
-	sdl.SetRenderDrawColor(ctx.renderer, 0, 0, 0, sdl.ALPHA_OPAQUE)
-	sdl.RenderClear(ctx.renderer)
-	x_off := i32(sdl.GetTicks())
-	// drawGradient(ctx.fb, ctx.w, ctx.h, x_off, 0)
+pl_draw :: proc(ctx: app.FrameBuffer, renderer: ^sdl.Renderer, texture: ^sdl.Texture) {
+	sdl.SetRenderDrawColor(renderer, 0, 0, 0, sdl.ALPHA_OPAQUE)
+	sdl.RenderClear(renderer)
 
 	pitch: i32 = 4 * ctx.w
-	sdl.UpdateTexture(ctx.texture, nil, raw_data(ctx.fb), pitch)
-	sdl.RenderTexture(ctx.renderer, ctx.texture, nil, nil)
+	sdl.UpdateTexture(texture, nil, raw_data(ctx.fb), pitch)
+	sdl.RenderTexture(renderer, texture, nil, nil)
 
-	sdl.RenderPresent(ctx.renderer)
+	sdl.RenderPresent(renderer)
 }
 
 // Event docs: SDL_EventType.html
-pl_handle_event :: proc(ctx: ^Offscreen_Buffer, sound: ^Sound_Output, event: sdl.Event) -> bool {
+pl_handle_event :: proc(ctx: ^SDL_Context, sound: ^Sound_Output, event: sdl.Event) -> bool {
 	pitch: u32
 
 	#partial switch event.type {
@@ -76,7 +64,7 @@ pl_handle_event :: proc(ctx: ^Offscreen_Buffer, sound: ^Sound_Output, event: sdl
 		}
 	case .WINDOW_EXPOSED:
 		sdl.Log("draw")
-		pl_draw(ctx)
+		pl_draw(app.FrameBuffer{ctx.fb, ctx.w, ctx.h}, ctx.renderer, ctx.texture)
 	case .JOYSTICK_ADDED:
 		sdl.Log("JOYSTICK_ADDED")
 	case .GAMEPAD_ADDED:
@@ -88,7 +76,7 @@ pl_handle_event :: proc(ctx: ^Offscreen_Buffer, sound: ^Sound_Output, event: sdl
 	return true
 }
 
-pl_resize_texture :: proc(ctx: ^Offscreen_Buffer, width, height: i32) -> (ok: bool) {
+pl_resize_texture :: proc(ctx: ^SDL_Context, width, height: i32) -> (ok: bool) {
 	if ctx.texture != nil do sdl.DestroyTexture(ctx.texture)
 	if ctx.fb != nil do delete(ctx.fb)
 
@@ -107,21 +95,18 @@ pl_resize_texture :: proc(ctx: ^Offscreen_Buffer, width, height: i32) -> (ok: bo
 
 
 pl_init_ui :: proc(
-	title: cstring,
-	app_id: cstring = "supply.same.handmade",
-	version: cstring = "1.0",
 	width: c.int = 640,
 	height: c.int = 480,
 ) -> (
-	ctx: Offscreen_Buffer,
+	ctx: SDL_Context,
 	err: Maybe(string),
 ) {
-	_ignore := sdl.SetAppMetadata(title, version, app_id)
+	_ignore := sdl.SetAppMetadata(app.TITLE, app.VERSION, app.APP_ID)
 	if (!sdl.Init(sdl.INIT_VIDEO)) {
 		return ctx, string(sdl.GetError())
 	}
 
-	ctx.window = sdl.CreateWindow(title, width, height, sdl.WINDOW_RESIZABLE)
+	ctx.window = sdl.CreateWindow(app.TITLE, width, height, sdl.WINDOW_RESIZABLE)
 	if ctx.window == nil {return ctx, string(sdl.GetError())}
 
 	ctx.renderer = sdl.CreateRenderer(ctx.window, nil)
@@ -158,8 +143,8 @@ pl_init_controller :: proc() -> bool {
 	}
 	return true
 }
-pl_quit :: proc(ctx: Offscreen_Buffer) {
-	if ctx.fb != nil do delete(ctx.fb)
+pl_quit :: proc(ctx: SDL_Context) {
+	delete(ctx.fb)
 	sdl.DestroyTexture(ctx.texture)
 	sdl.DestroyWindow(ctx.window)
 	sdl.Quit()
@@ -197,12 +182,14 @@ sdl_start :: proc() {
 			mem.tracking_allocator_destroy(&track)
 		}
 	}
-	app, err := pl_init_ui(strings.clone_to_cstring(title, context.temp_allocator))
+	// Initialize Graphics
+	ctx, err := pl_init_ui()
 	if err != nil do fmt.panicf("unable to initialize ui %s", err)
-	defer pl_quit(app)
+	defer pl_quit(ctx)
 	mode := sdl.GetCurrentDisplayMode(sdl.GetDisplayForWindow(ctx.window))
 	targetFps: f32 = 1 / pl_set_refresh_rate(mode)
 
+	// Initialize Sound
 	SampleRate :: 44100
 	stream, stream_err := pl_init_sound(SampleRate)
 	if stream_err != nil do sdl.Log("unable to initialize audio", stream_err)
@@ -213,11 +200,14 @@ sdl_start :: proc() {
 	}
 
 	pl_init_controller()
-	pl_resize_texture(&app, BUF_WIDTH, BUF_HEIGHT)
-	when ODIN_DEBUG {
-		perfCountFreq := sdl.GetPerformanceFrequency()
-		lastPerfCount := sdl.GetPerformanceCounter()
-	}
+	// will run on starup from a resize event
+	// pl_resize_texture(&app, mode.w, mode.h)
+
+	perfCountFreq := sdl.GetPerformanceFrequency()
+	lastPerfCount := sdl.GetPerformanceCounter()
+	// 
+	// Start Main Loop
+	// 
 	done: for {
 		event: sdl.Event
 		for sdl.PollEvent(&event) {
@@ -226,7 +216,7 @@ sdl_start :: proc() {
 					   event.key.scancode == sdl.Scancode.ESCAPE) {
 				break done
 			}
-			pl_handle_event(&app, &sound, event)
+			pl_handle_event(&ctx, &sound, event)
 		}
 
 		{
@@ -236,16 +226,17 @@ sdl_start :: proc() {
 			if bytesToWrite > 0 {
 				samples := make([]f32, max(bytesToWrite, 2), context.temp_allocator)
 
-				sound_out := GameSoundBuffer {
-					sampleRate  = sound.sampleRate,
-					sampleCount = bytesToWrite / bytesPerSample,
-					samples     = samples,
-				}
-				gameOutputSound(&sound_out)
+				app.output_sound(
+					&app.SampleBuffer {
+						sampleRate = sound.sampleRate,
+						sampleCount = bytesToWrite / bytesPerSample,
+						samples = samples,
+					},
+				)
 				sdl.PutAudioStreamData(sound.stream, &samples[0], bytesToWrite * 4)
 			}
-			updateAndRender(&app)
-			pl_draw(&app)
+			app.update_render(&app.FrameBuffer{ctx.fb, ctx.w, ctx.h})
+			pl_draw(app.FrameBuffer{ctx.fb, ctx.w, ctx.h}, ctx.renderer, ctx.texture)
 			// if !res {
 			// 	sdl.Log("failed to put audio %s", sdl.GetError())
 			// }
@@ -258,15 +249,14 @@ sdl_start :: proc() {
 		currentFps := perfCountFreq / counterElapsed
 
 		for (f32(sdl.GetPerformanceCounter() - lastPerfCount) / f32(perfCountFreq) < targetFps) {
-			// using this number drops framerate below modern target of 120fps
-			// but difficult to track real data while logging
-			fmt.println(
-				(
-					targetFps -
-					f32(sdl.GetPerformanceCounter() - lastPerfCount) / f32(perfCountFreq) 
-				),
-			)
+			// fmt.println(
+			// 	(
+			// 		targetFps -
+			// 		f32(sdl.GetPerformanceCounter() - lastPerfCount) / f32(perfCountFreq) 
+			// 	),
+			// )
 			sdl.DelayNS(50)
+			// fmt.println((f32(counterElapsed) / f32(perfCountFreq)))
 		}
 		lastCycleCounter := intrinsics.read_cycle_counter()
 		when ODIN_DEBUG {

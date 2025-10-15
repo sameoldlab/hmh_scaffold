@@ -1,4 +1,5 @@
 package app
+import "core:fmt"
 import "core:math"
 
 Context :: struct {
@@ -14,7 +15,7 @@ Pixel :: struct #raw_union {
 	value: u32,
 	color: Color,
 }
-drawGradient :: proc(fb: []u8, w, h, x_off, y_off: i32) {
+draw_gradient :: proc(fb: []u8, w, h, x_off, y_off: i32) {
 	pitch := w * 4
 	for y in 0 ..< h {
 		for x in 0 ..< w {
@@ -27,11 +28,11 @@ drawGradient :: proc(fb: []u8, w, h, x_off, y_off: i32) {
 }
 
 
-updateAndRender :: proc(buffer: ^OffscreenBuffer) {
-	drawGradient(buffer.fb, buffer.w, buffer.h, ctx.x_offset, ctx.y_offset)
+update_render :: proc(buffer: ^FrameBuffer) {
+	draw_gradient(buffer.fb, buffer.w, buffer.h, ctx.x_offset, ctx.y_offset)
 }
 
-gameOutputSound :: proc(sound: ^GameSoundBuffer) {
+output_sound :: proc(sound: ^SampleBuffer) {
 	ToneVolume :: .5
 	wavePeriod: f32 = f32(sound.sampleRate) / ctx.toneHz
 
