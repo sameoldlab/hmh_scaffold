@@ -1,5 +1,5 @@
-package main
-
+package platform
+import app "../app"
 import "base:intrinsics"
 import "core:c"
 import "core:fmt"
@@ -176,7 +176,7 @@ pl_set_refresh_rate :: proc(mode: ^sdl.DisplayMode) -> f32 {
 	}
 }
 
-pl_start :: proc(title: string) {
+sdl_start :: proc() {
 	when ODIN_DEBUG {
 		track: mem.Tracking_Allocator
 		mem.tracking_allocator_init(&track, context.allocator)

@@ -1,6 +1,7 @@
 package main
+import pl "platform"
 
 main :: proc() {
-	pl_start("dbg: Hero")
+	pl.start()
 }
 

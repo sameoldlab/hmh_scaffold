@@ -1,4 +1,5 @@
-package main
+package app
+
 Input :: enum {
 	UP,
 	DOWN,
