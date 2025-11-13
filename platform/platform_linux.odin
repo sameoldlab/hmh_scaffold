@@ -2,15 +2,11 @@ package platform
 import app "../app"
 import "core:fmt"
 import "core:sys/linux"
-import wl "wayland"
+import wl "wayland_2"
 
 start :: proc() {
 	// fmt.println("linux ", app.TITLE)
-	wl_connection, err := wl.connect_display()
-	if err == linux.Errno.NONE {
-		errno := wl.run(&wl_connection)
-		fmt.println("Error: ", errno)
-	} else {
+	if wl.run() == .NoWayland {
 		sdl_start()
 	}
 }

@@ -649,6 +649,10 @@ send_with_fd :: proc(fd: linux.Fd, msg: []u8, send_fd: linux.Fd) -> linux.Errno 
 		// control = make([]byte, 16 + ((size_of(linux.Fd) + 7) & -8), context.temp_allocator),
 	}
 
+	Msg_Hdr :: struct #packed {
+		len:         u64,
+		level, type: i32,
+	}
 	hdr := (^Msg_Hdr)(raw_data(data.control))
 	hdr.len = size_of(Msg_Hdr) + size_of(linux.Fd)
 	hdr.level = i32(linux.SOL_SOCKET)

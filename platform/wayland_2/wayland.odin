@@ -1,0 +1,340 @@
+package wayland2
+
+import app "../../app"
+import wl "../../vendor/wayland_odin"
+import "core:bytes"
+import "core:c"
+import "core:encoding/endian"
+import "core:fmt"
+import "core:io"
+import "core:math/rand"
+import "core:mem"
+import "core:os"
+import "core:slice"
+import "core:sys/linux"
+import "core:sys/unix"
+
+
+MAX_POOL_SIZE :: app.BUF_WIDTH * app.BUF_HEIGHT * 4 * 4
+State :: struct {
+	shm_pool_size, stride, w, h: i32,
+	should_redraw:               bool,
+	shm_fd:                      linux.Fd,
+	shm_pool_data:               []u8,
+	status:                      Status,
+	wl_registry:                 wl.Registry,
+	wl_shm:                      wl.Shm,
+	wl_shm_pool:                 wl.Shm_Pool,
+	wl_buffer:                   wl.Buffer,
+	xdg_wm_base:                 wl.Xdg_Wm_Base,
+	xdg_surface:                 wl.Xdg_Surface,
+	wl_surface:                  wl.Surface,
+	wl_compositor:               wl.Compositor,
+	xdg_toplevel:                wl.Xdg_Toplevel,
+	wl_seat:                     wl.Seat,
+	wl_pointer:                  wl.Pointer,
+	wl_keyboard:                 wl.Keyboard,
+	data_device_manager:         wl.Data_Device_Manager,
+	data_source:                 wl.Data_Source,
+	cursor_shape_manager:        wl.Wp_Cursor_Shape_Manager_V1,
+	keymap:                      rawptr,
+}
+Progress :: enum {
+	Continue,
+	Exit,
+	Crash,
+	NoWayland,
+}
+Status :: enum {
+	None,
+	SurfaceAckedConfigure,
+	SurfaceAttached,
+}
+
+run :: proc() -> Progress {
+	socket := linux.socket(.UNIX, .STREAM, {.CLOEXEC}, {}) or_else panic("")
+	addr: linux.Sock_Addr_Un = {
+		sun_family = .UNIX,
+	}
+	fmt.bprintf(
+		addr.sun_path[:],
+		"%v/%v",
+		os.get_env("XDG_RUNTIME_DIR", context.temp_allocator),
+		os.get_env("WAYLAND_DISPLAY", context.temp_allocator),
+	)
+
+	if err := linux.connect(socket, &addr); err != .NONE {
+		return .NoWayland
+	}
+
+	conn, wl_display := wl.display_connect(socket)
+	conn.object_types = make([dynamic]wl.Object_Type, 2)
+	conn.object_types[1] = .Display
+
+	state := State {
+		wl_registry   = wl.display_get_registry(&conn, wl_display),
+		w             = 500,
+		h             = 500,
+		should_redraw = true,
+	}
+	wl.display_sync(&conn, wl_display)
+
+	state.stride = state.w * 4
+	state.shm_pool_size = state.stride * state.h
+
+	shm_fd, shm_err := create_shm_file(&state.shm_pool_data, MAX_POOL_SIZE)
+	if shm_err != .NONE {
+		return .Crash
+	}
+	state.shm_fd = shm_fd
+	defer quit(&conn, state)
+
+	// recv_buf: [4096]byte
+	recv_buf := make([]u8, 1 << 16)
+	fmt.println("ready")
+	m: for {
+		if err := wl.connection_flush(&conn); err != .NONE {
+			fmt.println("FLUSH Error:", err)
+			fmt.println("Reading final messages")
+
+			wl.connection_poll(&conn, recv_buf[:])
+			object, event, err := wl.peek_event(&conn)
+			receive_events(&conn, &state, object, event)
+			return .Crash
+		}
+
+		// pfd := linux.Poll_Fd {
+		// 	fd     = conn.socket,
+		// 	events = {.IN},
+		// }
+		// result, err := linux.poll({pfd}, 1)
+		// if result > 0 {
+		wl.connection_poll(&conn, recv_buf[:])
+		// fmt.println("+ poll")
+		// }
+		for {
+			object, event := wl.peek_event(&conn) or_break
+			if prog := receive_events(&conn, &state, object, event); prog == .Exit do break m
+		}
+		conn.data_cursor = 0
+		conn.data = {}
+		using state
+		if wl_shm != 0 && wl_compositor != 0 && xdg_wm_base != 0 && wl_surface == 0 {
+			wl_surface = wl.compositor_create_surface(&conn, wl_compositor)
+			fmt.println(wl_surface, "created surface")
+			xdg_surface = wl.xdg_wm_base_get_xdg_surface(&conn, xdg_wm_base, wl_surface)
+			xdg_toplevel = wl.xdg_surface_get_toplevel(&conn, xdg_surface)
+			wl.surface_commit(&conn, wl_surface)
+			fmt.println(xdg_surface, "xdg surface")
+			fmt.println(xdg_toplevel, "xdg toplevel")
+			fmt.println(wl_surface, "commited surface")
+			wl.xdg_toplevel_set_title(&conn, state.xdg_toplevel, app.TITLE)
+			wl.xdg_toplevel_set_app_id(&conn, state.xdg_toplevel, app.APP_ID)
+		}
+		if wl_seat != 0 {
+			// wl_keyboard = wl.seat_get_keyboard(&conn, wl_seat)
+			// wl_pointer = wl.seat_get_pointer(&conn, wl_seat)
+		}
+
+		if status == .None do continue
+		if wl_shm_pool == 0 && wl_buffer == 0 {
+			wl_shm_pool = wl.shm_create_pool(&conn, wl_shm, auto_cast shm_fd, i32(MAX_POOL_SIZE))
+			fmt.println(wl_shm_pool, "shm created")
+			wl_buffer = wl.shm_pool_create_buffer(&conn, wl_shm_pool, 0, w, h, stride, .Xrgb8888)
+			fmt.println(wl_buffer, "buffer created")
+			assert(len(shm_pool_data) != 0)
+			// assert(shm_pool_size != 0)
+		}
+
+		if state.should_redraw {
+			app.update_render(
+				&{fb = state.shm_pool_data[:state.shm_pool_size], h = state.h, w = state.w},
+			)
+			wl.surface_attach(&conn, wl_surface, wl_buffer, 0, 0)
+			wl.surface_commit(&conn, wl_surface)
+			wl.surface_damage_buffer(&conn, wl_surface, 0, 0, w, h)
+			wl.surface_commit(&conn, wl_surface)
+
+			state.should_redraw = false
+			state.status = .SurfaceAttached
+		}
+	}
+	return .Exit
+}
+
+connect_display :: proc() -> (conn: wl.Connection, display: wl.Display, err: linux.Errno) {
+	socket := linux.socket(.UNIX, .STREAM, {.CLOEXEC}, {}) or_else panic("")
+	addr: linux.Sock_Addr_Un = {
+		sun_family = .UNIX,
+	}
+	fmt.bprintf(
+		addr.sun_path[:],
+		"%v/%v",
+		os.get_env("XDG_RUNTIME_DIR", context.temp_allocator),
+		os.get_env("WAYLAND_DISPLAY", context.temp_allocator),
+	)
+
+	err = linux.connect(socket, &addr)
+	assert(err == {})
+
+	conn, display = wl.display_connect(socket)
+	conn.object_types = make([dynamic]wl.Object_Type, 2)
+	conn.object_types[1] = .Display
+
+	return conn, display, err
+}
+
+create_shm_file :: proc(fb: ^[]u8, size: u32) -> (shm_fd: linux.Fd, err: linux.Errno) {
+	shm_fd = linux.Fd(
+		linux.syscall(linux.SYS_memfd_create, transmute(^u8)(cstring("wayland-shm")), 1),
+	)
+	// shm_fd = memfd_create("wayland-shm") or_return
+	linux.ftruncate(shm_fd, i64(size)) or_return
+	shm_ptr, mmap_err := linux.mmap(0, uint(size), {.READ, .WRITE}, {.SHARED}, shm_fd)
+	if mmap_err != .NONE {
+		linux.close(shm_fd)
+		return 0, mmap_err
+	}
+	fb^ = mem.slice_ptr(cast(^byte)shm_ptr, int(size))
+	return shm_fd, .NONE
+}
+
+
+@(private)
+receive_events :: proc(conn: ^wl.Connection, state: ^State, obj: u32, ev: wl.Event) -> Progress {
+	#partial switch e in ev {
+	case wl.Event_Registry_Global:
+		switch e.interface {
+		case "wl_shm":
+			state.wl_shm = wl.registry_bind(
+				conn,
+				state.wl_registry,
+				e.name,
+				e.interface,
+				e.version,
+				wl.Shm,
+			)
+			fmt.println(e.name, e.interface, e.version, state.wl_shm)
+		case "xdg_wm_base":
+			state.xdg_wm_base = wl.registry_bind(
+				conn,
+				state.wl_registry,
+				e.name,
+				e.interface,
+				e.version,
+				wl.Xdg_Wm_Base,
+			)
+			fmt.println(e.name, e.interface, "v", e.version, state.xdg_wm_base)
+		case "wl_compositor":
+			state.wl_compositor = wl.registry_bind(
+				conn,
+				state.wl_registry,
+				e.name,
+				e.interface,
+				e.version,
+				wl.Compositor,
+			)
+			fmt.println(e.name, e.interface, e.version, state.wl_compositor)
+		case "wl_seat":
+			state.wl_seat = wl.registry_bind(
+				conn,
+				state.wl_registry,
+				e.name,
+				e.interface,
+				e.version,
+				wl.Seat,
+			)
+		}
+	case wl.Event_Display_Error:
+		fmt.println("[ERROR] code:", e.code, "::", e.object_id, e.message)
+	case wl.Event_Shell_Surface_Ping:
+		wl.xdg_wm_base_pong(conn, wl.Xdg_Wm_Base(obj), e.serial)
+		fmt.println("Received XDG_WM_BASE ping:", e.serial)
+	case wl.Event_Xdg_Surface_Configure:
+		wl.xdg_surface_ack_configure(conn, state.xdg_surface, e.serial)
+		state.status = .SurfaceAckedConfigure
+		fmt.println(state.status, e.serial)
+	case wl.Event_Shm_Format:
+		fmt.println("Received WL_SHM format", e.format)
+		if e.format == .Xrgb8888 {
+			fmt.println("XRGB8888 supported by compositor!")
+		}
+	case wl.Event_Xdg_Toplevel_Configure:
+		fmt.println("config: ", e.height, "x", e.height, "|| states: ", e.states, sep = "")
+		if e.height == 0 || e.width == 0 do break
+		state.should_redraw = true
+		if state.wl_buffer != 0 && state.shm_pool_size != e.height * e.width * 4 {
+			resize_pool(state, e.width, e.height)
+			wl.buffer_destroy(conn, state.wl_buffer)
+			state.wl_buffer = wl.shm_pool_create_buffer(
+				conn,
+				state.wl_shm_pool,
+				0,
+				state.w,
+				state.h,
+				state.stride,
+				.Xrgb8888,
+			)
+			state.status = .None
+		}
+		if (state.wl_shm_pool != 0 && state.shm_pool_size * 2 > MAX_POOL_SIZE) {
+			wl.shm_pool_resize(conn, state.wl_shm_pool, state.shm_pool_size)
+		}
+	case wl.Event_Xdg_Toplevel_Close:
+		return .Exit
+	case wl.Event_Callback_Done:
+		fmt.println("DONE!!!")
+	case wl.Event_Xdg_Toplevel_Configure_Bounds:
+		fmt.println("config bounds: ", e.width, "x", e.height)
+	case wl.Event_Xdg_Toplevel_Wm_Capabilities:
+		fmt.println("capabilities:", e.capabilities)
+	case wl.Event_Seat_Capabilities:
+		capabilities := u32(e.capabilities)
+		fmt.println("Seat capabilities: ", capabilities)
+		pointer_available := capabilities > 1
+		keyboard_available := capabilities > 2
+		touch_available := capabilities > 4
+	case wl.Event_Seat_Name:
+	case wl.Event_Keyboard_Keymap:
+		assert(e.format == .Xkb_V1)
+		fd: linux.Fd = auto_cast e.fd
+		if keymap, mmap_err := linux.mmap(0, uint(e.size), {.READ}, {.PRIVATE}, fd);
+		   mmap_err != .NONE {
+			linux.close(fd)
+			return .Crash
+		} else {
+			state.keymap = keymap
+		}
+		fmt.println("Keymap", fd, e.size)
+	case:
+		fmt.printf("unknown message header: %i; opcode: %i\n", obj, e)
+	}
+	return .Continue
+}
+resize_pool :: proc(state: ^State, w, h: i32) -> i32 {
+	state.w = w
+	state.h = h
+	state.stride = state.w * 4
+	state.shm_pool_size = state.stride * state.h
+	return state.shm_pool_size
+}
+quit :: proc(conn: ^wl.Connection, state: State) {
+	if state.wl_buffer != 0 do wl.buffer_destroy(conn, state.wl_buffer)
+	if state.wl_shm_pool != 0 do wl.shm_pool_destroy(conn, state.wl_shm_pool)
+	if state.xdg_toplevel != 0 do wl.xdg_toplevel_destroy(conn, state.xdg_toplevel)
+	if state.xdg_surface != 0 do wl.xdg_surface_destroy(conn, state.xdg_surface)
+	if state.wl_surface != 0 do wl.surface_destroy(conn, state.wl_surface)
+	wl.connection_flush(conn)
+	fmt.println("closing shm_fd", state.shm_fd)
+	if len(state.shm_pool_data) > 0 {
+		linux.munmap(raw_data(state.shm_pool_data), len(state.shm_pool_data))
+	}
+	linux.close(state.shm_fd)
+	linux.close(conn.socket)
+	delete(conn.object_types)
+	delete(conn.fds_in)
+	delete(conn.fds_out)
+	delete(conn.free_ids)
+	bytes.buffer_destroy(&conn.buffer)
+}
+
