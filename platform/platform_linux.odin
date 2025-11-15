@@ -6,7 +6,7 @@ import wl "wayland_2"
 
 start :: proc() {
 	// fmt.println("linux ", app.TITLE)
-	if wl.run() == .NoWayland {
+	if wl.start() == .NoWayland {
 		sdl_start()
 	}
 }

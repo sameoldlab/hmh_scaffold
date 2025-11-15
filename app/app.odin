@@ -28,8 +28,10 @@ draw_gradient :: proc(fb: []u8, w, h, x_off, y_off: i32) {
 }
 
 
-update_render :: proc(buffer: ^FrameBuffer) {
-	draw_gradient(buffer.fb, buffer.w, buffer.h, ctx.x_offset, ctx.y_offset)
+update_render :: proc(fb: []u8, w, h: i32) {
+	ctx.x_offset += 1
+	ctx.y_offset += 1
+	draw_gradient(fb, w, h, ctx.x_offset, ctx.y_offset)
 }
 
 output_sound :: proc(sound: ^SampleBuffer) {
