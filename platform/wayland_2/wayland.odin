@@ -48,55 +48,37 @@ Status :: enum {
 }
 
 start :: proc() -> Progress {
-	socket := linux.socket(.UNIX, .STREAM, {.CLOEXEC}, {}) or_else panic("")
-	addr: linux.Sock_Addr_Un = {
-		sun_family = .UNIX,
-	}
-	fmt.bprintf(
-		addr.sun_path[:],
-		"%v/%v",
-		os.get_env("XDG_RUNTIME_DIR", context.temp_allocator),
-		os.get_env("WAYLAND_DISPLAY", context.temp_allocator),
-	)
-
-	if err := linux.connect(socket, &addr); err != .NONE {
-		return .NoWayland
-	}
-
-	conn, wl_display := display_connect(socket)
-	conn.object_types = make([dynamic]Object_Type, 2)
-	conn.object_types[1] = .Display
-
-	state := State {
-		wl_registry   = display_get_registry(&conn, wl_display),
+	conn, display, ok := connect_display()
+	if !ok do return .NoWayland
+	st := State {
+		wl_registry   = display_get_registry(&conn, display),
 		w             = 500,
 		h             = 500,
 		use_software  = true,
 		should_redraw = true,
 	}
 	recv_buf: [4096]byte
-	bootstrap(&conn, &state, recv_buf[:])
 
-	state.stride = state.w * 4
-	if state.use_software {
-		state.buffer_size = state.stride * state.h
+	st.stride = st.w * 4
+	if st.use_software {
+		st.buffer_size = st.stride * st.h
 
-		shm_fd, shm_err := create_shm_file(&state.shm_pool_data, MAX_POOL_SIZE)
+		shm_fd, shm_err := create_shm_file(&st.shm_pool_data, MAX_POOL_SIZE)
 		if shm_err != .NONE {
 			return .Crash
 		}
-		state.shm_fd = shm_fd
+		st.shm_fd = shm_fd
 	}
-	defer quit(&conn, state)
+	create_objects(&conn, &st, recv_buf[:])
+	defer quit(&conn, st)
 
 	i: u8 = 0
-	fmt.println("ready")
 	m: for {
 		if err := connection_flush(&conn); err != .NONE {
 			fmt.println("FLUSH Error:", err)
 			for {
 				object, event := peek_event(&conn) or_break
-				receive_events(&conn, &state, object, event)
+				receive_events(&conn, &st, object, event)
 			}
 			return .Crash
 		}
@@ -108,61 +90,39 @@ start :: proc() -> Progress {
 
 				for {
 					object, event := peek_event(&conn) or_break
-					if prog := receive_events(&conn, &state, object, event); prog != .Continue do return prog
+					if prog := receive_events(&conn, &st, object, event); prog != .Continue do return prog
 				}
 				conn.data_cursor = 0
 				conn.data = {}
 			}
 		}
-		if state.status == .None do continue
+		if st.status == .None do continue
 
-
-		using state
-		if state.use_software {
-			if wl_shm != 0 && wl_shm_pool == 0 && wl_buffer == 0 {
-				wl_shm_pool = shm_create_pool(&conn, wl_shm, auto_cast shm_fd, i32(MAX_POOL_SIZE))
-				for &b, i in wl_buffer {
-					b = shm_pool_create_buffer(
-						&conn,
-						wl_shm_pool,
-						i32(i) * buffer_size,
-						w,
-						h,
-						stride,
-						.Argb8888,
-					)
-				}
-				assert(len(shm_pool_data) != 0)
-				assert(buffer_size != 0)
-				fmt.println(wl_shm_pool, "shm created")
-				fmt.println(wl_buffer, "buffers created")
-			}
-		} else {
-			// Use eglGetPlatformDisplayEXT in concert with EGL_PLATFORM_WAYLAND_KHR to create an EGL display.
-			// Configure the display normally, choosing a config appropriate to your circumstances with EGL_SURFACE_TYPE set to EGL_WINDOW_BIT.
-			// Use wl_egl_window_create to create a wl_egl_window for a given wl_surface.
-			// Use eglCreatePlatformWindowSurfaceEXT to create an EGLSurface for a wl_egl_window.
-			// Proceed using EGL normally, e.g. eglMakeCurrent to make current the EGL context for your surface and eglSwapBuffers to send an up-to-date buffer to the compositor and commit the surface.
-		}
-		if should_redraw do draw(&conn, &state, u32(i))
+		if st.should_redraw do draw(&conn, &st, u32(i))
 		i += 1
-		fmt.println(i)
 	}
 	return .Exit
 }
+
 draw :: proc(conn: ^Connection, st: ^State, i: u32) {
 	using st
-	i := i % len(st.wl_buffer)
-	surface_frame(conn, wl_surface)
+	if use_software {
+		i := i % len(st.wl_buffer)
+		surface_frame(conn, wl_surface)
 
-	app.update_render(st.shm_pool_data[i32((i)) * st.buffer_size:][:st.buffer_size], st.w, st.h)
-	surface_attach(conn, wl_surface, wl_buffer[i], 0, 0)
-	surface_damage_buffer(conn, wl_surface, 0, 0, w, h)
-	surface_commit(conn, wl_surface)
-	st.should_redraw = false
+		app.update_render(
+			st.shm_pool_data[i32((i)) * st.buffer_size:][:st.buffer_size],
+			st.w,
+			st.h,
+		)
+		surface_attach(conn, wl_surface, wl_buffer[i], 0, 0)
+		surface_damage_buffer(conn, wl_surface, 0, 0, w, h)
+		surface_commit(conn, wl_surface)
+		st.should_redraw = false
+	}
 }
 
-bootstrap :: proc(conn: ^Connection, st: ^State, buff: []byte) -> linux.Errno {
+create_objects :: proc(conn: ^Connection, st: ^State, buff: []byte) -> linux.Errno {
 	connection_flush(conn) or_return
 	connection_poll(conn, buff)
 	for {
@@ -189,10 +149,36 @@ bootstrap :: proc(conn: ^Connection, st: ^State, buff: []byte) -> linux.Errno {
 	fmt.println(st.wl_keyboard, "wl_keyboard")
 	fmt.println(st.wl_pointer, "wl_pointer")
 	connection_flush(conn) or_return
+	connection_poll(conn, buff)
+	for {
+		object, event := peek_event(conn) or_break
+		if prog := receive_events(conn, st, object, event); prog != .Continue do return .NONE
+	}
+	if st.use_software {
+		using st
+		if wl_shm != 0 && wl_shm_pool == 0 && wl_buffer == 0 {
+			wl_shm_pool = shm_create_pool(conn, wl_shm, auto_cast shm_fd, i32(MAX_POOL_SIZE))
+			for &b, i in wl_buffer {
+				b = shm_pool_create_buffer(
+					conn,
+					wl_shm_pool,
+					i32(i) * buffer_size,
+					w,
+					h,
+					stride,
+					.Argb8888,
+				)
+			}
+			assert(len(shm_pool_data) != 0)
+			assert(buffer_size != 0)
+			fmt.println(wl_shm_pool, "shm created")
+			fmt.println(wl_buffer, "buffers created")
+		}
+	}
 	return .NONE
 }
 
-connect_display :: proc() -> (conn: Connection, display: Display, err: linux.Errno) {
+connect_display :: proc() -> (conn: Connection, display: Display, ok: bool) {
 	socket := linux.socket(.UNIX, .STREAM, {.CLOEXEC}, {}) or_else panic("")
 	addr: linux.Sock_Addr_Un = {
 		sun_family = .UNIX,
@@ -204,14 +190,15 @@ connect_display :: proc() -> (conn: Connection, display: Display, err: linux.Err
 		os.get_env("WAYLAND_DISPLAY", context.temp_allocator),
 	)
 
-	err = linux.connect(socket, &addr)
-	assert(err == {})
+	if err := linux.connect(socket, &addr); err != .NONE {
+		return
+	}
 
 	conn, display = display_connect(socket)
 	conn.object_types = make([dynamic]Object_Type, 2)
 	conn.object_types[1] = .Display
 
-	return conn, display, err
+	return conn, display, true
 }
 
 create_shm_file :: proc(fb: ^[]u8, size: u32) -> (shm_fd: linux.Fd, err: linux.Errno) {
@@ -264,7 +251,6 @@ receive_events :: proc(conn: ^Connection, st: ^State, obj: u32, ev: Event) -> Pr
 				e.version,
 				Compositor,
 			)
-			fmt.println(st.wl_surface, "wl_surface")
 		case "wl_seat":
 			st.wl_seat = registry_bind(conn, st.wl_registry, e.name, e.interface, e.version, Seat)
 		}
