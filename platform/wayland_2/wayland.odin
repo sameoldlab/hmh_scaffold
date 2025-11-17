@@ -6,6 +6,8 @@ import "core:fmt"
 import "core:mem"
 import "core:os"
 import "core:sys/linux"
+import "egl"
+import gl "vendor:OpenGL"
 
 
 MAX_POOL_SIZE :: app.BUF_WIDTH * app.BUF_HEIGHT * 4 * 4
@@ -34,6 +36,9 @@ State :: struct {
 	cursor_shape_manager:      Wp_Cursor_Shape_Manager_V1,
 	keymap:                    bool,
 	use_software:              bool,
+	egl_display:               egl.Display,
+	egl_surface:               egl.Surface,
+	egl_context:               egl.Context,
 }
 Progress :: enum {
 	Continue,
@@ -46,6 +51,7 @@ Status :: enum {
 	SurfaceAckedConfigure,
 	SurfaceAttached,
 }
+GL :: #config(GL, false)
 
 start :: proc() -> Progress {
 	conn, display, ok := connect_display()
@@ -54,9 +60,10 @@ start :: proc() -> Progress {
 		wl_registry   = display_get_registry(&conn, display),
 		w             = 500,
 		h             = 500,
-		use_software  = true,
+		use_software  = !GL,
 		should_redraw = true,
 	}
+
 	recv_buf: [4096]byte
 
 	st.stride = st.w * 4
@@ -84,7 +91,7 @@ start :: proc() -> Progress {
 		}
 
 		{
-			result, err := linux.poll({linux.Poll_Fd{fd = conn.socket, events = {.IN}}}, 0)
+			result, _ := linux.poll({linux.Poll_Fd{fd = conn.socket, events = {.IN}}}, 2)
 			if result > 0 {
 				connection_poll(&conn, recv_buf[:])
 
@@ -119,6 +126,11 @@ draw :: proc(conn: ^Connection, st: ^State, i: u32) {
 		surface_damage_buffer(conn, wl_surface, 0, 0, w, h)
 		surface_commit(conn, wl_surface)
 		st.should_redraw = false
+	} else {
+		gl.ClearColor(1, 0, 0, 1)
+		gl.Clear(gl.COLOR_BUFFER_BIT)
+		gl.Flush()
+		egl.SwapBuffers(egl_display, egl_surface)
 	}
 }
 
@@ -174,8 +186,105 @@ create_objects :: proc(conn: ^Connection, st: ^State, buff: []byte) -> linux.Err
 			fmt.println(wl_shm_pool, "shm created")
 			fmt.println(wl_buffer, "buffers created")
 		}
-	}
+	} else do setup_gl(conn, st)
 	return .NONE
+}
+
+// https://registry.khronos.org/EGL/sdk/docs/man/html/eglIntro.xhtml
+setup_gl :: proc(conn: ^Connection, st: ^State) -> Progress {
+	assert(st.wl_surface != 0)
+	egl.load_extensions()
+	fmt.print("\n\n\n=====================\n")
+	major, minor: i32
+	egl.BindAPI(egl.OPENGL_API)
+
+	st.egl_display = egl.GetPlatformDisplayEXT(egl.PLATFORM_WAYLAND_KHR, nil, nil)
+	// st.egl_display = egl.GetDisplay(egl.DEFAULT_DISPLAY)
+	if st.egl_display == nil {
+		fmt.println("Failed to create egl display")
+		return .Crash
+	}
+	assert(st.egl_display != {})
+	initialized := egl.Initialize(st.egl_display, &major, &minor)
+	assert(initialized == egl.TRUE)
+
+	fmt.println(st.egl_display, "egl_display created")
+	fmt.printfln("EGL v%i.%i", major, minor)
+
+	config_attribs: [11]i32 = {
+		egl.SURFACE_TYPE,
+		egl.WINDOW_BIT,
+		egl.RENDERABLE_TYPE,
+		egl.OPENGL_BIT,
+		egl.RED_SIZE,
+		8,
+		egl.GREEN_SIZE,
+		8,
+		egl.BLUE_SIZE,
+		8,
+		egl.NONE,
+	}
+	num_configs: i32
+	configs: [256]egl.Config
+	if egl.GetConfigs(st.egl_display, &configs[0], len(configs), &num_configs) {
+		fmt.println("configs: ", num_configs)
+		fmt.println("configs: ", configs)
+	}
+	assert(num_configs > 0)
+	egl_config: egl.Config
+	if egl.ChooseConfig(st.egl_display, &config_attribs[0], &egl_config, 1, &num_configs) {
+		fmt.println("configs: ", num_configs)
+	}
+	assert(num_configs == 1)
+
+	context_attribs := []i32{egl.CONTEXT_MAJOR_VERSION, 2, egl.CONTEXT_MINOR_VERSION, 1, egl.NONE}
+	st.egl_context = egl.CreateContext(
+		st.egl_display,
+		egl_config,
+		egl.NO_CONTEXT,
+		nil, //&context_attribs[0],
+	)
+	assert(st.egl_context != {})
+	fmt.println(st.egl_context, "egl_context created")
+
+	/* 
+	  egl's `NativeWindowType`, required to make a window, is a pointer to the surface type used to create egl_display.
+	  In this case a proxy object struct from libwayland's implementation of wayland protocol.
+	  To use egl.PLATFORM_WAYLAND_KHR without libwayland (assuming it works) would mean passing in a struct, with
+	  function pointers and an event queue, which exactly matched libwayland's as egl will call back
+	  into libwayland to run the operations it needs. It's a big dependency injection club, and you're not in it!
+	  ============================================================================================================
+	  The wl_egl_window which creates said function cannot be "changed to use your " function cannot be modified as
+	  To use OpenGl without this requires implementing linux-dmabuf yourself.
+	  Info may be found in Mesa's implementation at src/egl/drivers/dri2/platform_wayland.c"
+	 * https://ziggit.dev/t/drawing-with-opengl-without-glfw-or-sdl-on-linux/3175/12
+	 * https://blaztinn.gitlab.io/post/dmabuf-texture-sharing/
+	 */
+
+	// does not work
+	wl_egl_surface := shim_wl_surface_proxy(conn, st.wl_surface)
+	egl_window, ok := wl_egl_window_create(wl_egl_surface, st.w, st.h)
+	assert(ok)
+	fmt.println("egl_window: ", egl_window, "\nshim_surface", wl_egl_surface)
+	st.egl_surface = egl.CreatePlatformWindowSurfaceEXT(
+		st.egl_display,
+		egl_config,
+		cast(egl.NativeWindowType)egl_window,
+		nil,
+	)
+	fmt.printfln("egl surface: ", st.egl_surface)
+	assert(st.egl_surface != {})
+	res := egl.MakeCurrent(st.egl_display, st.egl_surface, st.egl_surface, st.egl_context)
+	assert(res == true)
+
+
+	w, h: i32
+	egl.QuerySurface(st.egl_display, st.egl_surface, egl.WIDTH, &w)
+	egl.QuerySurface(st.egl_display, st.egl_surface, egl.HEIGHT, &h)
+	fmt.printfln("egl %ix%i:", w, h)
+
+	fmt.print("\n\n\n=====================")
+	return .Continue
 }
 
 connect_display :: proc() -> (conn: Connection, display: Display, ok: bool) {
