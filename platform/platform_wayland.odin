@@ -1,6 +1,6 @@
-package wayland
+package platform
 
-import app "../../app"
+import app "../app"
 import "core:bytes"
 import "core:fmt"
 import "core:mem"
@@ -9,6 +9,7 @@ import "core:sys/linux"
 import "egl"
 import "gbm"
 import gl "vendor:OpenGL"
+import wl "wayland"
 
 
 MAX_POOL_SIZE :: app.BUF_WIDTH * app.BUF_HEIGHT * 4 * 4
@@ -20,20 +21,20 @@ State :: struct {
 	status:                              Status,
 
 	// WL
-	wl_registry:                         Registry,
-	wl_buffer:                           [BUF_LEN]Buffer,
-	xdg_wm_base:                         Xdg_Wm_Base,
-	xdg_surface:                         Xdg_Surface,
-	wl_surface:                          Surface,
-	surface_callback:                    Callback,
-	wl_compositor:                       Compositor,
-	xdg_toplevel:                        Xdg_Toplevel,
-	wl_seat:                             Seat,
-	wl_pointer:                          Pointer,
-	wl_keyboard:                         Keyboard,
-	data_device_manager:                 Data_Device_Manager,
-	data_source:                         Data_Source,
-	cursor_shape_manager:                Wp_Cursor_Shape_Manager_V1,
+	wl_registry:                         wl.Registry,
+	wl_buffer:                           [BUF_LEN]wl.Buffer,
+	xdg_wm_base:                         wl.Xdg_Wm_Base,
+	xdg_surface:                         wl.Xdg_Surface,
+	wl_surface:                          wl.Surface,
+	surface_callback:                    wl.Callback,
+	wl_compositor:                       wl.Compositor,
+	xdg_toplevel:                        wl.Xdg_Toplevel,
+	wl_seat:                             wl.Seat,
+	wl_pointer:                          wl.Pointer,
+	wl_keyboard:                         wl.Keyboard,
+	data_device_manager:                 wl.Data_Device_Manager,
+	data_source:                         wl.Data_Source,
+	cursor_shape_manager:                wl.Wp_Cursor_Shape_Manager_V1,
 
 	// EGL
 	egl_display:                         egl.Display,
@@ -44,12 +45,12 @@ State :: struct {
 	drm_fd:                              linux.Fd,
 	gbm_device:                          gbm.Device,
 	gbm_surface:                         gbm.Surface,
-	zwp_linux_dmabuf:                    Zwp_Linux_Dmabuf_V1,
+	zwp_linux_dmabuf:                    wl.Zwp_Linux_Dmabuf_V1,
 
 	// SHM
 	shm_fd:                              linux.Fd,
-	wl_shm:                              Shm,
-	wl_shm_pool:                         Shm_Pool,
+	wl_shm:                              wl.Shm,
+	wl_shm_pool:                         wl.Shm_Pool,
 	shm_pool_data:                       []u8,
 }
 
@@ -57,7 +58,7 @@ Gbo :: struct {
 	bo:     gbm.BufferObject,
 	fd:     linux.Fd,
 	busy:   bool,
-	buffer: Buffer,
+	buffer: wl.Buffer,
 }
 gbo: #soa[BUF_LEN]Gbo
 
@@ -73,11 +74,11 @@ Status :: enum {
 }
 GL :: #config(GL, false)
 
-start :: proc() -> Error {
+wl_start :: proc() -> Error {
 	conn, display, ok := connect_display()
 	if !ok do return .NoWayland
 	st := State {
-		wl_registry   = display_get_registry(&conn, display),
+		wl_registry   = wl.display_get_registry(&conn, display),
 		w             = 500,
 		h             = 500,
 		use_software  = !GL,
@@ -105,10 +106,10 @@ start :: proc() -> Error {
 	i: u8 = 0
 	fmt.println("Entering main loop")
 	m: for {
-		if err := connection_flush(&conn); err != .NONE {
+		if err := wl.connection_flush(&conn); err != .NONE {
 			fmt.println("FLUSH Error:", err)
 			for {
-				object, event := peek_event(&conn) or_break
+				object, event := wl.peek_event(&conn) or_break
 				receive_events(&conn, &st, object, event)
 			}
 			return .Crash
@@ -117,10 +118,10 @@ start :: proc() -> Error {
 		{
 			result, _ := linux.poll({linux.Poll_Fd{fd = conn.socket, events = {.IN}}}, 2)
 			if result > 0 {
-				connection_poll(&conn, recv_buf[:])
+				wl.connection_poll(&conn, recv_buf[:])
 
 				for {
-					object, event := peek_event(&conn) or_break
+					object, event := wl.peek_event(&conn) or_break
 					if exit := receive_events(&conn, &st, object, event); exit do return .None
 				}
 				conn.data_cursor = 0
@@ -136,17 +137,17 @@ start :: proc() -> Error {
 	return .None
 }
 
-draw :: proc(conn: ^Connection, st: ^State, i: u32) {
+draw :: proc(conn: ^wl.Connection, st: ^State, i: u32) {
 	fmt.println("====================START DRAW====================")
 	using st
 	if use_software {
 		if !should_redraw do return
 		i := i % len(st.wl_buffer)
-		surface_frame(conn, wl_surface)
+		wl.surface_frame(conn, wl_surface)
 		app.update_render(st.shm_pool_data[((i)) * st.buffer_size:][:st.buffer_size], st.w, st.h)
-		surface_attach(conn, wl_surface, wl_buffer[i], 0, 0)
-		surface_damage_buffer(conn, wl_surface, 0, 0, i32(w), i32(h))
-		surface_commit(conn, wl_surface)
+		wl.surface_attach(conn, wl_surface, wl_buffer[i], 0, 0)
+		wl.surface_damage_buffer(conn, wl_surface, 0, 0, i32(w), i32(h))
+		wl.surface_commit(conn, wl_surface)
 		st.should_redraw = false
 	} else {
 		assert(st.zwp_linux_dmabuf != 0)
@@ -170,6 +171,7 @@ draw :: proc(conn: ^Connection, st: ^State, i: u32) {
 		fmt.println("clear")
 		gl.ClearColor(.5, .5, .8, .9)
 		gl.Clear(gl.COLOR_BUFFER_BIT)
+		gl.Flush()
 		glscene()
 		fmt.println("swap")
 		res := egl.SwapBuffers(egl_display, egl_surface)
@@ -197,10 +199,10 @@ draw :: proc(conn: ^Connection, st: ^State, i: u32) {
 			gbm.surface_release_buffer(gbm_surface, last_bo)
 		}
 
-		surface_attach(conn, wl_surface, buf.buffer, 0, 0)
-		surface_damage_buffer(conn, wl_surface, 0, 0, i32(w), i32(h))
-		surface_commit(conn, wl_surface)
-		surface_commit(conn, wl_surface)
+		wl.surface_attach(conn, wl_surface, buf.buffer, 0, 0)
+		wl.surface_damage_buffer(conn, wl_surface, 0, 0, i32(w), i32(h))
+		wl.surface_commit(conn, wl_surface)
+		wl.surface_commit(conn, wl_surface)
 
 
 		buf.busy = true
@@ -304,11 +306,11 @@ glscene :: proc() {
 	gl.UseProgram(shader_program)
 	gl.BindVertexArray(VAO)
 }
-create_objects :: proc(conn: ^Connection, st: ^State, buff: []byte) -> linux.Errno {
-	connection_flush(conn) or_return
-	connection_poll(conn, buff)
+create_objects :: proc(conn: ^wl.Connection, st: ^State, buff: []byte) -> linux.Errno {
+	wl.connection_flush(conn) or_return
+	wl.connection_poll(conn, buff)
 	for {
-		object, event := peek_event(conn) or_break
+		object, event := wl.peek_event(conn) or_break
 		if exit := receive_events(conn, st, object, event); exit do return .NONE
 	}
 	conn.data_cursor = 0
@@ -317,26 +319,26 @@ create_objects :: proc(conn: ^Connection, st: ^State, buff: []byte) -> linux.Err
 	assert(st.xdg_wm_base != 0)
 	assert(st.wl_seat != 0)
 
-	st.wl_surface = compositor_create_surface(conn, st.wl_compositor)
-	st.xdg_surface = xdg_wm_base_get_xdg_surface(conn, st.xdg_wm_base, st.wl_surface)
-	st.xdg_toplevel = xdg_surface_get_toplevel(conn, st.xdg_surface)
-	st.wl_keyboard = seat_get_keyboard(conn, st.wl_seat)
-	st.wl_pointer = seat_get_pointer(conn, st.wl_seat)
+	st.wl_surface = wl.compositor_create_surface(conn, st.wl_compositor)
+	st.xdg_surface = wl.xdg_wm_base_get_xdg_surface(conn, st.xdg_wm_base, st.wl_surface)
+	st.xdg_toplevel = wl.xdg_surface_get_toplevel(conn, st.xdg_surface)
+	st.wl_keyboard = wl.seat_get_keyboard(conn, st.wl_seat)
+	st.wl_pointer = wl.seat_get_pointer(conn, st.wl_seat)
 
-	xdg_toplevel_set_title(conn, st.xdg_toplevel, app.TITLE)
-	xdg_toplevel_set_app_id(conn, st.xdg_toplevel, app.APP_ID)
-	surface_commit(conn, st.wl_surface)
+	wl.xdg_toplevel_set_title(conn, st.xdg_toplevel, app.TITLE)
+	wl.xdg_toplevel_set_app_id(conn, st.xdg_toplevel, app.APP_ID)
+	wl.surface_commit(conn, st.wl_surface)
 	if st.zwp_linux_dmabuf != 0 {
-		zwp_linux_dmabuf_v1_get_surface_feedback(conn, st.zwp_linux_dmabuf, st.wl_surface)
+		wl.zwp_linux_dmabuf_v1_get_surface_feedback(conn, st.zwp_linux_dmabuf, st.wl_surface)
 	}
 
 	fmt.println(st.xdg_surface, "xdg_surface")
 	fmt.println(st.wl_keyboard, "wl_keyboard")
 	fmt.println(st.wl_pointer, "wl_pointer")
-	connection_flush(conn) or_return
-	connection_poll(conn, buff)
+	wl.connection_flush(conn) or_return
+	wl.connection_poll(conn, buff)
 	for {
-		object, event := peek_event(conn) or_break
+		object, event := wl.peek_event(conn) or_break
 		if exit := receive_events(conn, st, object, event); exit do return .NONE
 	}
 	conn.data_cursor = 0
@@ -344,9 +346,9 @@ create_objects :: proc(conn: ^Connection, st: ^State, buff: []byte) -> linux.Err
 	if st.use_software {
 		using st
 		if wl_shm != 0 && wl_shm_pool == 0 && wl_buffer == 0 {
-			wl_shm_pool = shm_create_pool(conn, wl_shm, auto_cast shm_fd, i32(MAX_POOL_SIZE))
+			wl_shm_pool = wl.shm_create_pool(conn, wl_shm, auto_cast shm_fd, i32(MAX_POOL_SIZE))
 			for &b, i in wl_buffer {
-				b = shm_pool_create_buffer(
+				b = wl.shm_pool_create_buffer(
 					conn,
 					wl_shm_pool,
 					i32(u32(i) * buffer_size),
@@ -370,7 +372,7 @@ create_objects :: proc(conn: ^Connection, st: ^State, buff: []byte) -> linux.Err
 	return .NONE
 }
 
-connect_display :: proc() -> (conn: Connection, display: Display, ok: bool) {
+connect_display :: proc() -> (conn: wl.Connection, display: wl.Display, ok: bool) {
 	socket := linux.socket(.UNIX, .STREAM, {.CLOEXEC}, {}) or_else panic("")
 	addr: linux.Sock_Addr_Un = {
 		sun_family = .UNIX,
@@ -387,8 +389,8 @@ connect_display :: proc() -> (conn: Connection, display: Display, ok: bool) {
 		return
 	}
 
-	conn, display = display_connect(socket)
-	conn.object_types = make([dynamic]Object_Type, 2)
+	conn, display = wl.display_connect(socket)
+	conn.object_types = make([dynamic]wl.Object_Type, 2)
 	conn.object_types[1] = .Display
 
 	return conn, display, true
@@ -411,76 +413,83 @@ create_shm_file :: proc(fb: ^[]u8, size: u32) -> (shm_fd: linux.Fd, err: linux.E
 
 
 @(private)
-receive_events :: proc(conn: ^Connection, st: ^State, obj: u32, ev: Event) -> (exit: bool) {
+receive_events :: proc(conn: ^wl.Connection, st: ^State, obj: u32, ev: wl.Event) -> (exit: bool) {
 	#partial switch e in ev {
-	case Event_Registry_Global:
+	case wl.Event_Registry_Global:
 		switch e.interface {
 		case "wl_shm":
 			if st.use_software {
-				st.wl_shm = registry_bind(
+				st.wl_shm = wl.registry_bind(
 					conn,
 					st.wl_registry,
 					e.name,
 					e.interface,
 					e.version,
-					Shm,
+					wl.Shm,
 				)
 			}
 		case "xdg_wm_base":
-			st.xdg_wm_base = registry_bind(
+			st.xdg_wm_base = wl.registry_bind(
 				conn,
 				st.wl_registry,
 				e.name,
 				e.interface,
 				e.version,
-				Xdg_Wm_Base,
+				wl.Xdg_Wm_Base,
 			)
 		case "wl_compositor":
-			st.wl_compositor = registry_bind(
+			st.wl_compositor = wl.registry_bind(
 				conn,
 				st.wl_registry,
 				e.name,
 				e.interface,
 				e.version,
-				Compositor,
+				wl.Compositor,
 			)
 		case "wl_seat":
-			st.wl_seat = registry_bind(conn, st.wl_registry, e.name, e.interface, e.version, Seat)
+			st.wl_seat = wl.registry_bind(
+				conn,
+				st.wl_registry,
+				e.name,
+				e.interface,
+				e.version,
+				wl.Seat,
+			)
 		case "zwp_linux_dmabuf_v1":
-			st.zwp_linux_dmabuf = registry_bind(
+			st.zwp_linux_dmabuf = wl.registry_bind(
 				conn,
 				st.wl_registry,
 				e.name,
 				e.interface,
 				4,
-				Zwp_Linux_Dmabuf_V1,
+				wl.Zwp_Linux_Dmabuf_V1,
 			)
 		// zwp_linux_dmabuf_v1_get_default_feedback(conn, st.zwp_linux_dmabuf)
 		}
 	// fmt.println(e.interface)
-	case Event_Display_Error:
+	case wl.Event_Display_Error:
 		fmt.println("[ERROR] code:", e.code, "::", e.object_id, e.message)
-	case Event_Shell_Surface_Ping:
-		xdg_wm_base_pong(conn, Xdg_Wm_Base(obj), e.serial)
+	case wl.Event_Shell_Surface_Ping:
+		wl.xdg_wm_base_pong(conn, wl.Xdg_Wm_Base(obj), e.serial)
 		fmt.println("Received XDG_WM_BASE ping:", e.serial)
-	case Event_Xdg_Surface_Configure:
-		xdg_surface_ack_configure(conn, st.xdg_surface, e.serial)
+	case wl.Event_Xdg_Surface_Configure:
+		wl.xdg_surface_ack_configure(conn, st.xdg_surface, e.serial)
 		st.status = .SurfaceAckedConfigure
 		fmt.println(st.status, e.serial)
-	case Event_Shm_Format:
+	case wl.Event_Shm_Format:
 		fmt.println("Received WL_SHM format", e.format)
 		if e.format == .Argb8888 {
 			fmt.println("ARGB8888 supported by compositor!")
 		}
-	case Event_Xdg_Toplevel_Configure:
+	case wl.Event_Xdg_Toplevel_Configure:
 		fmt.println("config: ", e.height, "x", e.height, "|| states: ", e.states, sep = "")
 		if st.use_software {
 			if e.height == 0 || e.width == 0 do break
 			if st.wl_buffer != 0 && i32(st.buffer_size) != e.height * e.width * 4 {
 				resize_pool(st, e.width, e.height)
 				for &b, i in st.wl_buffer {
-					if b != 0 do buffer_destroy(conn, b)
-					b = shm_pool_create_buffer(
+					if b != 0 do wl.buffer_destroy(conn, b)
+					b = wl.shm_pool_create_buffer(
 						conn,
 						st.wl_shm_pool,
 						i32(i) * i32(st.buffer_size),
@@ -493,33 +502,33 @@ receive_events :: proc(conn: ^Connection, st: ^State, obj: u32, ev: Event) -> (e
 				st.status = .None
 			}
 			if (st.wl_shm_pool != 0 && st.buffer_size * 2 > MAX_POOL_SIZE) {
-				shm_pool_resize(conn, st.wl_shm_pool, i32(st.buffer_size))
+				wl.shm_pool_resize(conn, st.wl_shm_pool, i32(st.buffer_size))
 			}
 		}
-	case Event_Xdg_Toplevel_Close:
+	case wl.Event_Xdg_Toplevel_Close:
 		return true
-	case Event_Callback_Done:
+	case wl.Event_Callback_Done:
 		when ODIN_DEBUG do fmt.printfln("%ims", e.callback_data - st.tick)
 		st.tick = e.callback_data
 		st.should_redraw = true
-	case Event_Xdg_Toplevel_Configure_Bounds:
+	case wl.Event_Xdg_Toplevel_Configure_Bounds:
 		fmt.println("config bounds: ", e.width, "x", e.height)
-	case Event_Xdg_Toplevel_Wm_Capabilities:
+	case wl.Event_Xdg_Toplevel_Wm_Capabilities:
 		fmt.println("capabilities:", e.capabilities)
-	case Event_Buffer_Release:
+	case wl.Event_Buffer_Release:
 		fmt.println("Buffer released")
-	case Event_Zwp_Linux_Dmabuf_Feedback_V1_Main_Device:
-		fmt.println("Event_Zwp_Linux_Dmabuf_Feedback_V1_Main_Device", e)
-	case Event_Zwp_Linux_Dmabuf_Feedback_V1_Format_Table:
-		fmt.println("Event_Zwp_Linux_Dmabuf_Feedback_V1_Format_Table", e)
-	case Event_Seat_Capabilities:
+	case wl.Event_Zwp_Linux_Dmabuf_Feedback_V1_Main_Device:
+		fmt.println("wl.Event_Zwp_Linux_Dmabuf_Feedback_V1_Main_Device", e)
+	case wl.Event_Zwp_Linux_Dmabuf_Feedback_V1_Format_Table:
+		fmt.println("wl.Event_Zwp_Linux_Dmabuf_Feedback_V1_Format_Table", e)
+	case wl.Event_Seat_Capabilities:
 		capabilities := u32(e.capabilities)
 		fmt.println("Seat capabilities: ", capabilities)
 		pointer_available := capabilities > 1
 		keyboard_available := capabilities > 2
 		touch_available := capabilities > 4
-	case Event_Seat_Name:
-	case Event_Keyboard_Keymap:
+	case wl.Event_Seat_Name:
+	case wl.Event_Keyboard_Keymap:
 		fmt.println("Keymap", e.fd, e.size, st.keymap)
 		assert(e.format == .Xkb_V1)
 		fd: linux.Fd = auto_cast e.fd
@@ -547,18 +556,19 @@ resize_pool :: proc(state: ^State, w, h: i32) {
 	state.buffer_size = state.stride * state.h
 }
 
-quit :: proc(conn: ^Connection, state: State) {
+quit :: proc(conn: ^wl.Connection, state: State) {
+	// TODO: Single destroy command for any wl.object
 	for b in state.wl_buffer {
-		if b != 0 do buffer_destroy(conn, b)
+		if b != 0 do wl.buffer_destroy(conn, b)
 	}
-	if state.wl_shm_pool != 0 do shm_pool_destroy(conn, state.wl_shm_pool)
-	if state.xdg_toplevel != 0 do xdg_toplevel_destroy(conn, state.xdg_toplevel)
-	if state.xdg_surface != 0 do xdg_surface_destroy(conn, state.xdg_surface)
-	if state.wl_surface != 0 do surface_destroy(conn, state.wl_surface)
-	if state.wl_seat != 0 do seat_release(conn, state.wl_seat)
-	if state.wl_keyboard != 0 do keyboard_release(conn, state.wl_keyboard)
-	if state.wl_pointer != 0 do pointer_release(conn, state.wl_pointer)
-	connection_flush(conn)
+	if state.wl_shm_pool != 0 do wl.shm_pool_destroy(conn, state.wl_shm_pool)
+	if state.xdg_toplevel != 0 do wl.xdg_toplevel_destroy(conn, state.xdg_toplevel)
+	if state.xdg_surface != 0 do wl.xdg_surface_destroy(conn, state.xdg_surface)
+	if state.wl_surface != 0 do wl.surface_destroy(conn, state.wl_surface)
+	if state.wl_seat != 0 do wl.seat_release(conn, state.wl_seat)
+	if state.wl_keyboard != 0 do wl.keyboard_release(conn, state.wl_keyboard)
+	if state.wl_pointer != 0 do wl.pointer_release(conn, state.wl_pointer)
+	wl.connection_flush(conn)
 	if len(state.shm_pool_data) > 0 {
 		linux.munmap(raw_data(state.shm_pool_data), len(state.shm_pool_data))
 	}

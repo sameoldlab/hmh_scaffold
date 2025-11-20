@@ -1,4 +1,4 @@
-package wayland
+package platform
 
 import "core:fmt"
 import "core:os"
@@ -6,6 +6,7 @@ import "core:sys/linux"
 import "egl"
 import "gbm"
 import gl "vendor:OpenGL"
+import wl "wayland"
 
 open_drm_device :: proc() -> (fd: linux.Fd, ok: bool) {
 	render_nodes := []cstring {
@@ -34,7 +35,7 @@ open_drm_device :: proc() -> (fd: linux.Fd, ok: bool) {
  */
 
 // https://registry.khronos.org/EGL/sdk/docs/man/html/eglIntro.xhtml
-setup_egl :: proc(conn: ^Connection, st: ^State) -> bool {
+setup_egl :: proc(conn: ^wl.Connection, st: ^State) -> bool {
 	fmt.print("\n\n\n=====================\n")
 
 	st.drm_fd = open_drm_device() or_return
@@ -125,7 +126,7 @@ setup_egl :: proc(conn: ^Connection, st: ^State) -> bool {
 	st.gbm_device = gbm_device
 	st.gbm_surface = gbm_surface
 
-	gl.load_up_to(3, 3, egl.gl_set_proc_address)
+	gl.load_up_to(GL_MAJOR, GL_MINOR, egl.gl_set_proc_address)
 
 	fmt.printfln("OpenGL %s", gl.GetString(gl.VERSION))
 	fmt.printfln("Renderer: %s", gl.GetString(gl.RENDERER))
@@ -139,7 +140,7 @@ setup_egl :: proc(conn: ^Connection, st: ^State) -> bool {
 }
 
 init_buffers :: proc(
-	conn: ^Connection,
+	conn: ^wl.Connection,
 	st: ^State,
 	buffers: #soa[]Gbo,
 	egl_surface: egl.Surface,
@@ -160,7 +161,7 @@ init_buffers :: proc(
 	fmt.println(buffers)
 }
 init_buffer :: proc(
-	conn: ^Connection,
+	conn: ^wl.Connection,
 	st: ^State,
 	buf: Gbo,
 	egl_surface: egl.Surface,
@@ -168,12 +169,13 @@ init_buffer :: proc(
 	gbm_surface: gbm.Surface,
 	// w, h: u32,
 ) -> (
-	wl_buffer: Buffer,
+	wl_buffer: wl.Buffer,
 	bound_bo: gbm.BufferObject,
 	ok: bool,
 ) {
 	gl.ClearColor(1, 1, 1, 1)
 	gl.Clear(gl.COLOR_BUFFER_BIT)
+	gl.Flush()
 	if !egl.SwapBuffers(egl_display, egl_surface) {
 		fmt.println("Swap Buffers failed")
 		err := gl.GetError()
@@ -200,7 +202,7 @@ init_buffer :: proc(
 		}
 		delete(fds_to_close)
 	}
-	zwp_params := zwp_linux_dmabuf_v1_create_params(conn, st.zwp_linux_dmabuf)
+	zwp_params := wl.zwp_linux_dmabuf_v1_create_params(conn, st.zwp_linux_dmabuf)
 	plane_count := gbm.bo_get_plane_count(bo)
 	for plane in 0 ..< plane_count {
 		offset := gbm.bo_get_offset(bo, plane)
@@ -211,7 +213,7 @@ init_buffer :: proc(
 
 		assert(plane_fd > 0)
 
-		zwp_linux_buffer_params_v1_add(
+		wl.zwp_linux_buffer_params_v1_add(
 			conn,
 			zwp_params,
 			auto_cast plane_fd,
@@ -222,26 +224,26 @@ init_buffer :: proc(
 			u32(modifier & 0xFFFFFFFF),
 		)
 	}
-	zwp_linux_buffer_params_v1_create(conn, zwp_params, i32(w), i32(h), format, auto_cast 0)
+	wl.zwp_linux_buffer_params_v1_create(conn, zwp_params, i32(w), i32(h), format, auto_cast 0)
 
-	connection_flush(conn)
+	wl.connection_flush(conn)
 	recv_buf: [4096]byte
 	result, _ := linux.poll({linux.Poll_Fd{fd = conn.socket, events = {.IN}}}, 16)
 	if result <= 0 {
 		fmt.println("hung waiting for buffer creation")
 		return
 	}
-	connection_poll(conn, recv_buf[:])
+	wl.connection_poll(conn, recv_buf[:])
 	for {
-		object, event := peek_event(conn) or_break
+		object, event := wl.peek_event(conn) or_break
 		#partial switch e in event {
-		case Event_Zwp_Linux_Buffer_Params_V1_Created:
+		case wl.Event_Zwp_Linux_Buffer_Params_V1_Created:
 			fmt.printfln("Buffer creation success for %i", zwp_params, bo)
-			zwp_linux_buffer_params_v1_destroy(conn, zwp_params)
+			wl.zwp_linux_buffer_params_v1_destroy(conn, zwp_params)
 			return e.buffer, bo, true
-		case Event_Zwp_Linux_Buffer_Params_V1_Failed:
+		case wl.Event_Zwp_Linux_Buffer_Params_V1_Failed:
 			fmt.printfln("Buffer creation failed for %i", zwp_params)
-			zwp_linux_buffer_params_v1_destroy(conn, zwp_params)
+			wl.zwp_linux_buffer_params_v1_destroy(conn, zwp_params)
 		case:
 			receive_events(conn, st, object, event)
 		}
