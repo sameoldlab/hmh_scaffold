@@ -14,39 +14,51 @@ import gl "vendor:OpenGL"
 // https://zed.dev/blog/videogame
 // https://hasen.substack.com/p/signed-distance-function-field
 
-vertex_shader_source: cstring = `
-#version 460 core
-layout (location = 0) in vec2 aPos;
-
-void main() {
-    gl_Position = vec4(aPos, 0.0, 1.0);
+Uniforms :: struct {
+	mouse:      [2]f32,
+	resolution: [2]f32,
+	time:       u64,
 }
-`
 
-
-fragment_shader_source: cstring = `
-#version 460 core
-out vec4 FragColor;
-
-void main() {
-    FragColor = vec4(1., vec2(.1), 1.0);
-}
-`
-
-triangle_vao: u32
-
-renderer_draw :: proc(shader, vao: u32) {
-	gl.UseProgram(shader)
+renderer_draw :: proc(program, vao: u32, u: Uniforms = {}) {
+	set_uniforms(program, u)
+	gl.UseProgram(program)
 	gl.BindVertexArray(vao)
 	gl.DrawElements(gl.TRIANGLES, 6, gl.UNSIGNED_INT, nil)
 	gl.BindVertexArray(0)
 }
 
+set_uniforms :: proc(program: u32, u: Uniforms) {
+	res := gl.GetUniformLocation(program, "iResolution")
+	time := gl.GetUniformLocation(program, "iTime")
+	iMouse := gl.GetUniformLocation(program, "iMouse")
+	gl.UseProgram(program)
+	glUniform(time, f32(u.time))
+	glUniform(iMouse, u.mouse.x, u.mouse.y)
+	glUniform(res, u.resolution.x, u.resolution.y)
+}
+glUniform :: proc {
+	gl.Uniform1d,
+	gl.Uniform1f,
+	gl.Uniform2f,
+	gl.Uniform3f,
+	gl.Uniform4f,
+	gl.Uniform1i,
+	gl.Uniform2i,
+	gl.Uniform3i,
+	gl.Uniform4i,
+	gl.Uniform1ui,
+	gl.Uniform2ui,
+	gl.Uniform3ui,
+	gl.Uniform4ui,
+}
+
 renderer_make_program :: proc() -> (program, vao, vbo: u32, ok: bool) {
-	program = create_shader_program(
-		&vertex_shader_source,
-		&fragment_shader_source,
-	) or_return
+	when !ODIN_DEBUG {
+		program = create_shader_program(#load("./main.vert"), #load("./main.frag"), true) or_return
+	} else {
+		program = load_shaders_file("./platform/main.vert", "./platform/main.frag") or_return
+	}
 
 	triangle := []f32 {
 		// pos           // col
@@ -84,17 +96,42 @@ renderer_make_program :: proc() -> (program, vao, vbo: u32, ok: bool) {
 	return program, vao, vbo, true
 }
 
-create_shader_program :: proc(vertex_src, fragment_src: ^cstring) -> (shader_program: u32, ok: bool) {
-	vertex_shader := compile_shader(vertex_src, gl.VERTEX_SHADER) or_return
-	fragment_shader := compile_shader(fragment_src, gl.FRAGMENT_SHADER) or_return
-	shader_program = gl.CreateProgram()
+load_shaders_file :: proc(
+	vs_filename, fs_filename: string,
+	binary_retrievable := false,
+) -> (
+	program_id: u32,
+	ok: bool,
+) {
+	vert_data := os.read_entire_file(vs_filename) or_return
+	defer delete(vert_data)
 
+	frag_data := os.read_entire_file(fs_filename) or_return
+	defer delete(frag_data)
+
+	return create_shader_program(string(vert_data), string(frag_data), binary_retrievable)
+}
+
+create_shader_program :: proc(
+	vertex_src, fragment_src: string,
+	binary_retrievable := false,
+) -> (
+	shader_program: u32,
+	ok: bool,
+) {
+	vertex_shader := compile_shader(vertex_src, .VERTEX_SHADER) or_return
+	defer gl.DeleteShader(vertex_shader)
+	fragment_shader := compile_shader(fragment_src, .FRAGMENT_SHADER) or_return
+	defer gl.DeleteShader(fragment_shader)
+
+	shader_program = gl.CreateProgram()
 	gl.AttachShader(shader_program, vertex_shader)
 	gl.AttachShader(shader_program, fragment_shader)
 	gl.LinkProgram(shader_program)
 
-	gl.DeleteShader(vertex_shader)
-	gl.DeleteShader(fragment_shader)
+	if binary_retrievable {
+		gl.ProgramParameteri(shader_program, gl.PROGRAM_BINARY_RETRIEVABLE_HINT, 1)
+	}
 
 	success: i32
 	gl.GetProgramiv(shader_program, gl.LINK_STATUS, &success)
@@ -108,10 +145,12 @@ create_shader_program :: proc(vertex_src, fragment_src: ^cstring) -> (shader_pro
 	return shader_program, true
 }
 
-compile_shader :: proc(source: ^cstring, shader_type: u32) -> (shader: u32, ok: bool) {
-	shader = gl.CreateShader(shader_type)
+compile_shader :: proc(source: string, shader_type: gl.Shader_Type) -> (shader: u32, ok: bool) {
+	shader = gl.CreateShader(u32(shader_type))
+	length := i32(len(source))
+	copy := cstring(raw_data(source))
 
-	gl.ShaderSource(shader, 1, source, nil)
+	gl.ShaderSource(shader, 1, &copy, &length)
 	gl.CompileShader(shader)
 
 	success: i32
@@ -122,7 +161,6 @@ compile_shader :: proc(source: ^cstring, shader_type: u32) -> (shader: u32, ok: 
 		log.errorf("Shader compilation failed: %s", cstring(raw_data(info_log[:])))
 		return 0, false
 	}
-
 	return shader, true
 }
 

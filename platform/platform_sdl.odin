@@ -20,6 +20,7 @@ SDL_Context :: struct {
 	fb:                       []u8,
 	w, h:                     c.int,
 	use_software:             bool,
+	unis:                   Uniforms,
 }
 Sound_Output :: struct {
 	sampleRate: i32,
@@ -44,10 +45,12 @@ pl_handle_event :: proc(ctx: ^SDL_Context, sound: ^Sound_Output, event: sdl.Even
 
 	#partial switch event.type {
 	case .WINDOW_RESIZED:
-		sdl.Log("resize (%d, %d)", event.window.data1, event.window.data2)
+		// sdl.Log("resize (%d, %d)", event.window.data1, event.window.data2)
 	case .WINDOW_PIXEL_SIZE_CHANGED:
 		sdl.GetWindowSize(ctx.window, &ctx.w, &ctx.h)
 		pl_resize_texture(ctx, event.window.data1, event.window.data2)
+		gl.Viewport(0, 0, ctx.w, ctx.h)
+		ctx.unis.resolution = {f32(ctx.w), f32(ctx.h)}
 	case .KEY_DOWN, .KEY_UP:
 		wasDown := event.key.repeat || event.type == .KEY_UP
 		isDown := event.type == .KEY_DOWN
@@ -68,8 +71,11 @@ pl_handle_event :: proc(ctx: ^SDL_Context, sound: ^Sound_Output, event: sdl.Even
 		case .E:
 		// }
 		}
+	case .MOUSE_MOTION:
+		ctx.unis.mouse.x = event.motion.x
+		ctx.unis.mouse.y = event.motion.y
 	case .WINDOW_EXPOSED:
-		sdl.Log("draw")
+		// sdl.Log("draw")
 		pl_draw(app.FrameBuffer{ctx.fb, ctx.w, ctx.h}, ctx.renderer, ctx.texture)
 	case .JOYSTICK_ADDED:
 		sdl.Log("JOYSTICK_ADDED")
@@ -261,11 +267,12 @@ sdl_start :: proc() {
 				// 	sdl.Log("failed to put audio %s", sdl.GetError())
 				// }
 			} else {
-				renderer_draw(ctx.shader_program, ctx.vao)
+				renderer_draw(ctx.shader_program, ctx.vao, ctx.unis)
 				sdl.GL_SwapWindow(ctx.window)
 			}
 		}
 		endPerfCount := sdl.GetPerformanceCounter()
+		ctx.unis.time = endPerfCount
 		counterElapsed := endPerfCount - lastPerfCount
 		lastPerfCount = endPerfCount
 
