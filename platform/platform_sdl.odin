@@ -7,6 +7,7 @@ import "core:fmt"
 import "core:log"
 import "core:math"
 import "core:mem"
+import "core:os"
 import "core:strings"
 import gl "vendor:OpenGL"
 import sdl "vendor:sdl3"
@@ -142,6 +143,7 @@ pl_init_ui :: proc(
 			log.debugf("OpenGL Version: %v.%v", gl.loaded_up_to_major, gl.loaded_up_to_minor)
 			log.debugf("GLSL Version: %s", gl.GetString(gl.SHADING_LANGUAGE_VERSION))
 			log.debugf("Renderer: %s", gl.GetString(gl.RENDERER))
+			setup_gl_debug()
 		}
 	} else {
 		ctx.renderer = sdl.CreateRenderer(ctx.window, nil)
@@ -233,6 +235,9 @@ sdl_start :: proc() {
 	// 
 	// Start Main Loop
 	// 
+	program: u32
+	last_vertex_time, last_fragment_time: os.File_Time
+	updated: bool
 	done: for {
 		event: sdl.Event
 		for sdl.PollEvent(&event) {
@@ -267,6 +272,15 @@ sdl_start :: proc() {
 				// 	sdl.Log("failed to put audio %s", sdl.GetError())
 				// }
 			} else {
+				when ODIN_DEBUG {
+					ctx.shader_program, last_vertex_time, last_fragment_time, updated =
+						reload_shader_from_files(
+							"./platform/main.vert",
+							"./platform/main.frag",
+							ctx.shader_program,
+							last_vertex_time,
+							last_fragment_time,
+						)}
 				renderer_draw(ctx.shader_program, ctx.vao, ctx.unis)
 				sdl.GL_SwapWindow(ctx.window)
 			}

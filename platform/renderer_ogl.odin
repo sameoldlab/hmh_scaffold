@@ -1,6 +1,8 @@
 package platform
 
+import "base:runtime"
 import "core:log"
+import "core:os"
 import gl "vendor:OpenGL"
 
 // Get started
@@ -162,5 +164,130 @@ compile_shader :: proc(source: string, shader_type: gl.Shader_Type) -> (shader: 
 		return 0, false
 	}
 	return shader, true
+}
+
+when ODIN_OS == .Windows || ODIN_OS == .Linux {
+	reload_shader_from_files :: proc(
+		vertex_name, fragment_name: string,
+		program: u32,
+		last_vertex_time, last_fragment_time: os.File_Time,
+	) -> (
+		new_program: u32,
+		current_vertex_time, current_fragment_time: os.File_Time,
+		success: bool,
+	) {
+		current_vertex_time, _ = os.last_write_time_by_name(vertex_name)
+		current_fragment_time, _ = os.last_write_time_by_name(fragment_name)
+		current_program := program
+
+		if current_vertex_time != last_vertex_time || current_fragment_time != last_fragment_time {
+			new_program, success = load_shaders_file(vertex_name, fragment_name)
+			if success {
+				gl.DeleteProgram(current_program)
+				current_program = new_program
+				log.info("Updated shaders")
+				success = true
+			} else {
+				log.error("Failed to update shaders")
+			}
+		}
+
+		return current_program, current_vertex_time, current_fragment_time, success
+	}
+}
+
+setup_gl_debug :: proc() {
+	gl.Enable(gl.DEBUG_OUTPUT)
+	gl.Enable(gl.DEBUG_OUTPUT_SYNCHRONOUS)
+
+	gl.DebugMessageCallback(gl_debug_callback, nil)
+	gl.DebugMessageControl(gl.DONT_CARE, gl.DONT_CARE, gl.DONT_CARE, 0, nil, gl.TRUE)
+	log.debug("debug callback registered")
+}
+
+gl_debug_callback :: proc "c" (
+	source: u32,
+	type: u32,
+	id: u32,
+	severity: u32,
+	length: i32,
+	message: cstring,
+	userParam: rawptr,
+) {
+	context = runtime.default_context()
+
+	if severity == gl.DEBUG_SEVERITY_NOTIFICATION do return
+
+	source_str := get_debug_source(source)
+	type_str := get_debug_type(type)
+	severity_str := get_debug_severity(severity)
+
+	switch severity {
+	case gl.DEBUG_SEVERITY_HIGH:
+		log.errorf("[GL ERROR] %s %s: %s", source_str, type_str, message)
+	case gl.DEBUG_SEVERITY_MEDIUM:
+		log.warnf("[GL WARNING] %s %s: %s", source_str, type_str, message)
+	case gl.DEBUG_SEVERITY_LOW:
+		log.infof("[GL INFO] %s %s: %s", source_str, type_str, message)
+	}
+}
+
+get_debug_source :: proc(source: u32) -> string {
+	switch source {
+	case gl.DEBUG_SOURCE_API:
+		return "API"
+	case gl.DEBUG_SOURCE_WINDOW_SYSTEM:
+		return "Window System"
+	case gl.DEBUG_SOURCE_SHADER_COMPILER:
+		return "Shader Compiler"
+	case gl.DEBUG_SOURCE_THIRD_PARTY:
+		return "Third Party"
+	case gl.DEBUG_SOURCE_APPLICATION:
+		return "Application"
+	case gl.DEBUG_SOURCE_OTHER:
+		return "Other"
+	case:
+		return "Unknown"
+	}
+}
+
+get_debug_type :: proc(type: u32) -> string {
+	switch type {
+	case gl.DEBUG_TYPE_ERROR:
+		return "Error"
+	case gl.DEBUG_TYPE_DEPRECATED_BEHAVIOR:
+		return "Deprecated"
+	case gl.DEBUG_TYPE_UNDEFINED_BEHAVIOR:
+		return "Undefined Behavior"
+	case gl.DEBUG_TYPE_PORTABILITY:
+		return "Portability"
+	case gl.DEBUG_TYPE_PERFORMANCE:
+		return "Performance"
+	case gl.DEBUG_TYPE_MARKER:
+		return "Marker"
+	case gl.DEBUG_TYPE_PUSH_GROUP:
+		return "Push Group"
+	case gl.DEBUG_TYPE_POP_GROUP:
+		return "Pop Group"
+	case gl.DEBUG_TYPE_OTHER:
+		return "Other"
+	case:
+		return "Unknown"
+	}
+}
+
+get_debug_severity :: proc(severity: u32) -> string {
+	switch severity {
+	case gl.DEBUG_SEVERITY_HIGH:
+		return "High"
+	case gl.DEBUG_SEVERITY_MEDIUM:
+		return "Medium"
+	case gl.DEBUG_SEVERITY_LOW:
+		return "Low"
+	case gl.DEBUG_SEVERITY_NOTIFICATION:
+		return "Notification"
+	case:
+		return "Unknown"
+	}
 }
 
